@@ -1,0 +1,16 @@
+[package]
+name = "rrm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratatui       = "0.29"
+crossterm     = "0.28"
+tokio         = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+serde         = { version = "1", features = ["derive"] }
+toml          = "0.8"
+anyhow        = "1"
+libc          = "0.2"
+
+[dev-dependencies]
+# none required for v1

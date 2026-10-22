@@ -1,0 +1,7 @@
+[display]
+refresh_ms = 1000
+accent_color = "#00BFFF"
+
+[processes]
+top_n = 15
+sort_by = "cpu"
