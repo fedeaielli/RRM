@@ -1,0 +1,166 @@
+use crate::collectors::Collector;
+use crate::collectors::battery::BatteryCollector;
+use crate::collectors::cpu::CpuCollector;
+use crate::collectors::disk::DiskCollector;
+use crate::collectors::gpu::{GpuProvider, detect_gpu};
+use crate::collectors::memory::MemoryCollector;
+use crate::collectors::network::NetworkCollector;
+use crate::collectors::processes::{ProcessCollector, SortBy};
+use crate::config::Config;
+use crate::history::RingBuffer;
+use std::collections::HashMap;
+
+/// Tabs shown in the tab bar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tab {
+    Cpu,
+    Memory,
+    Disk,
+    Network,
+    Gpu,
+    Battery,
+    Processes,
+}
+
+/// Application state shared by the event loop and the UI.
+pub struct App {
+    pub tab: Tab,
+    pub cpu: CpuCollector,
+    pub memory: MemoryCollector,
+    pub disk: DiskCollector,
+    pub network: NetworkCollector,
+    pub battery: BatteryCollector,
+    pub processes: ProcessCollector,
+    pub gpu: Option<Box<dyn GpuProvider>>,
+
+    pub cpu_history: RingBuffer,
+    pub mem_history: RingBuffer,
+    pub net_rx_history: HashMap<String, RingBuffer>,
+    pub net_tx_history: HashMap<String, RingBuffer>,
+    pub disk_read_history: HashMap<String, RingBuffer>,
+    pub disk_write_history: HashMap<String, RingBuffer>,
+
+    pub tick_rate_ms: u64,
+    pub accent: (u8, u8, u8),
+}
+
+impl App {
+    /// Initialize collectors, history buffers and GPU detection.
+    pub fn new(config: &Config, terminal_width: u16) -> anyhow::Result<Self> {
+        let mut cpu = CpuCollector::new()?;
+        cpu.update()?;
+
+        let mut memory = MemoryCollector::new()?;
+        memory.update()?;
+
+        let mut disk = DiskCollector::new()?;
+        disk.update()?;
+
+        let mut network = NetworkCollector::new()?;
+        network.update()?;
+
+        let mut battery = BatteryCollector::new()?;
+        battery.update()?;
+
+        let sort_by = match config.processes.sort_by.as_str() {
+            "mem" => SortBy::Mem,
+            _ => SortBy::Cpu,
+        };
+        let mut processes = ProcessCollector::new(config.processes.top_n, sort_by)?;
+        processes.update()?;
+
+        let capacity = (terminal_width as usize).max(1);
+
+        Ok(Self {
+            tab: Tab::Cpu,
+            cpu,
+            memory,
+            disk,
+            network,
+            battery,
+            processes,
+            gpu: detect_gpu(),
+            cpu_history: RingBuffer::new(capacity),
+            mem_history: RingBuffer::new(capacity),
+            net_rx_history: HashMap::new(),
+            net_tx_history: HashMap::new(),
+            disk_read_history: HashMap::new(),
+            disk_write_history: HashMap::new(),
+            tick_rate_ms: config.display.refresh_ms,
+            accent: config.accent_color_rgb(),
+        })
+    }
+
+    /// Refresh every collector and append new values to the history buffers.
+    pub fn on_tick(&mut self) {
+        let _ = self.cpu.update();
+        let _ = self.memory.update();
+        let _ = self.disk.update();
+        let _ = self.network.update();
+        let _ = self.battery.update();
+        let _ = self.processes.update();
+
+        self.cpu_history.push(self.cpu.latest.total_percent);
+
+        let mem_percent = if self.memory.latest.total_kb > 0 {
+            self.memory.latest.used_kb as f32 / self.memory.latest.total_kb as f32 * 100.0
+        } else {
+            0.0
+        };
+        self.mem_history.push(mem_percent);
+
+        let capacity = self.cpu_history.capacity();
+        for sample in &self.network.latest {
+            self.net_rx_history
+                .entry(sample.interface.clone())
+                .or_insert_with(|| RingBuffer::new(capacity))
+                .push(sample.rx_bytes_per_sec as f32);
+            self.net_tx_history
+                .entry(sample.interface.clone())
+                .or_insert_with(|| RingBuffer::new(capacity))
+                .push(sample.tx_bytes_per_sec as f32);
+        }
+
+        for sample in &self.disk.io {
+            self.disk_read_history
+                .entry(sample.device.clone())
+                .or_insert_with(|| RingBuffer::new(capacity))
+                .push((sample.read_bytes_per_sec / 1024.0) as f32);
+            self.disk_write_history
+                .entry(sample.device.clone())
+                .or_insert_with(|| RingBuffer::new(capacity))
+                .push((sample.write_bytes_per_sec / 1024.0) as f32);
+        }
+    }
+
+    /// Advance to the next tab, wrapping around at the end.
+    pub fn next_tab(&mut self) {
+        self.tab = match self.tab {
+            Tab::Cpu => Tab::Memory,
+            Tab::Memory => Tab::Disk,
+            Tab::Disk => Tab::Network,
+            Tab::Network => Tab::Gpu,
+            Tab::Gpu => Tab::Battery,
+            Tab::Battery => Tab::Processes,
+            Tab::Processes => Tab::Cpu,
+        };
+    }
+
+    /// Move to the previous tab, wrapping around at the start.
+    pub fn prev_tab(&mut self) {
+        self.tab = match self.tab {
+            Tab::Cpu => Tab::Processes,
+            Tab::Memory => Tab::Cpu,
+            Tab::Disk => Tab::Memory,
+            Tab::Network => Tab::Disk,
+            Tab::Gpu => Tab::Network,
+            Tab::Battery => Tab::Gpu,
+            Tab::Processes => Tab::Battery,
+        };
+    }
+
+    /// Set the refresh interval, clamped to the supported range.
+    pub fn set_tick_rate(&mut self, ms: u64) {
+        self.tick_rate_ms = ms.clamp(100, 10_000);
+    }
+}
