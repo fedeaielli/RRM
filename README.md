@@ -6,7 +6,7 @@ A fast, terminal-based system resource monitor for Linux, powered by `/proc` and
 ## Install
 
 ```sh
-cargo install --git https://github.com/faielli/rrm
+cargo install --git https://github.com/fedeaielli/rrm
 ```
 
 ## Usage
