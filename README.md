@@ -2,7 +2,9 @@
 
 A fast, terminal-based system resource monitor for Linux, powered by `/proc` and `/sys`.
 
-![screenshot](assets/screenshot.png)
+| gpu | cpu | network | theme |
+|---|---|---|---|
+| ![gpu](assets/screenshot.png) | ![cpu](assets/screenshot-cpu.png) | ![network](assets/screenshot-network.png) | ![theme](assets/screenshot-theme.png) |
 
 
 ## Install
