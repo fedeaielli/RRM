@@ -9,6 +9,7 @@ pub struct BatterySample {
     pub energy_now_uwh: Option<u64>,
     pub energy_full_uwh: Option<u64>,
     pub energy_full_design_uwh: Option<u64>,
+    pub power_now_uw: Option<u64>,
 }
 
 /// Collects battery information from `/sys/class/power_supply`.
@@ -69,6 +70,7 @@ impl Collector for BatteryCollector {
                 energy_now_uwh: read_optional_u64(&path, now_attr),
                 energy_full_uwh: read_optional_u64(&path, full_attr),
                 energy_full_design_uwh: read_optional_u64(&path, design_attr),
+                power_now_uw: read_power_uw(&path),
             });
         }
 
@@ -88,8 +90,34 @@ fn normalize_status(status: &str) -> String {
     }
 }
 
+/// Power draw in microwatts: `power_now` when available, otherwise
+/// `current_now` (µA) times `voltage_now` (µV).
+fn read_power_uw(path: &std::path::Path) -> Option<u64> {
+    if let Some(uw) = read_optional_u64(path, "power_now") {
+        return Some(uw);
+    }
+    let current = read_optional_u64(path, "current_now")?;
+    let voltage = read_optional_u64(path, "voltage_now")?;
+    Some(power_from_current(current, voltage))
+}
+
+fn power_from_current(current_ua: u64, voltage_uv: u64) -> u64 {
+    current_ua.saturating_mul(voltage_uv) / 1_000_000
+}
+
 /// Read an optional numeric sysfs attribute.
 fn read_optional_u64(path: &std::path::Path, attribute: &str) -> Option<u64> {
     let raw = std::fs::read_to_string(path.join(attribute)).ok()?;
     raw.trim().parse::<u64>().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::power_from_current;
+
+    #[test]
+    fn power_from_current_uses_microwatts() {
+        assert_eq!(power_from_current(1_070_000, 14_888_000), 15_930_160);
+        assert_eq!(power_from_current(0, 14_888_000), 0);
+    }
 }

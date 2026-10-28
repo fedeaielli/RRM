@@ -1,8 +1,9 @@
-use super::{DIM, accent, braille, dim_text, panel, render_empty, threshold_color};
+use super::{DIM, accent, braille, dim_text, panel, render_empty};
 use crate::app::App;
 use crate::history::RingBuffer;
+use crate::theme::Palette;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
@@ -18,13 +19,14 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 
     let [top_area, grid_area] =
-        Layout::vertical([Constraint::Length(6), Constraint::Min(0)]).areas(area);
-    draw_top(frame, top_area, app, accent);
+        Layout::vertical([Constraint::Length(8), Constraint::Min(0)]).areas(area);
+    draw_top(frame, top_area, app);
     draw_core_grid(frame, grid_area, app);
 }
 
-fn draw_top(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
-    let block = panel("cpu", accent);
+fn draw_top(frame: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = panel(format!("cpu — {}", app.cpu.model), app.palette.banner)
+        .border_style(Style::default().fg(app.palette.banner));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 || inner.width == 0 {
@@ -38,7 +40,7 @@ fn draw_top(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
     let mut spans = vec![Span::styled(
         format!("total  {total:.1}%"),
         Style::default()
-            .fg(threshold_color(total))
+            .fg(app.palette.threshold(total))
             .add_modifier(Modifier::BOLD),
     )];
     if let Some(avg_mhz) = average_frequency(&app.cpu.latest.frequencies_mhz) {
@@ -49,10 +51,12 @@ fn draw_top(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
         spans.push(dim_text("   "));
         spans.push(Span::styled(
             format!("{temperature:.1}°C"),
-            Style::default().fg(threshold_color(temperature)),
+            Style::default().fg(app.palette.threshold(temperature)),
         ));
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), header_area);
+    let [_, text_area] =
+        Layout::horizontal([Constraint::Length(2), Constraint::Min(0)]).areas(header_area);
+    frame.render_widget(Paragraph::new(Line::from(spans)), text_area);
 
     braille::render(
         frame,
@@ -60,7 +64,7 @@ fn draw_top(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
         &app.cpu_history,
         10.0,
         MIN_AUTOSCALE,
-        Style::default().fg(threshold_color(total)),
+        Style::default().fg(app.palette.threshold(total)),
     );
 }
 
@@ -91,7 +95,7 @@ fn draw_core_grid(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         .div_ceil(num_cols)
         .max(1) as u16;
     // Braille yields four dot rows per cell, so taller cells keep the waveform smooth.
-    let cell_h = (area.height / rows).clamp(5, 7);
+    let cell_h = (area.height / rows).clamp(4, 6);
     let bottom = area.y.saturating_add(area.height);
 
     for (index, &percent) in app.cpu.latest.per_core_percent.iter().enumerate() {
@@ -118,6 +122,7 @@ fn draw_core_grid(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             index,
             percent,
             app.cpu_core_histories.get(index),
+            &app.palette,
         );
     }
 }
@@ -128,12 +133,13 @@ fn draw_core_cell(
     index: usize,
     percent: f32,
     history: Option<&RingBuffer>,
+    palette: &Palette,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
     }
 
-    let color = threshold_color(percent);
+    let color = palette.threshold(percent);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(DIM))

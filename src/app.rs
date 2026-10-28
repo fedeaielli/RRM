@@ -8,6 +8,7 @@ use crate::collectors::network::NetworkCollector;
 use crate::collectors::processes::{ProcessCollector, SortBy};
 use crate::config::Config;
 use crate::history::RingBuffer;
+use crate::theme::{Palette, SLOT_NAMES};
 use std::collections::HashMap;
 
 /// Tabs shown in the tab bar.
@@ -20,6 +21,7 @@ pub enum Tab {
     Gpu,
     Battery,
     Processes,
+    Theme,
 }
 
 /// Application state shared by the event loop and the UI.
@@ -37,14 +39,19 @@ pub struct App {
     pub cpu_core_histories: Vec<RingBuffer>,
     pub mem_history: RingBuffer,
     pub swap_history: RingBuffer,
-    pub battery_charge_history: RingBuffer,
+    pub battery_power_history: RingBuffer,
+    pub gpu_usage_history: RingBuffer,
+    pub gpu_temp_history: RingBuffer,
     pub net_rx_history: HashMap<String, RingBuffer>,
     pub net_tx_history: HashMap<String, RingBuffer>,
     pub disk_read_history: HashMap<String, RingBuffer>,
     pub disk_write_history: HashMap<String, RingBuffer>,
 
     pub tick_rate_ms: u64,
-    pub accent: (u8, u8, u8),
+    pub palette: Palette,
+    pub config: Config,
+    pub theme_row: usize,
+    pub theme_error: Option<String>,
 }
 
 impl App {
@@ -89,13 +96,18 @@ impl App {
             cpu_core_histories: (0..num_cores).map(|_| RingBuffer::new(capacity)).collect(),
             mem_history: RingBuffer::new(capacity),
             swap_history: RingBuffer::new(capacity),
-            battery_charge_history: RingBuffer::new(capacity),
+            battery_power_history: RingBuffer::new(capacity),
+            gpu_usage_history: RingBuffer::new(capacity),
+            gpu_temp_history: RingBuffer::new(capacity),
             net_rx_history: HashMap::new(),
             net_tx_history: HashMap::new(),
             disk_read_history: HashMap::new(),
             disk_write_history: HashMap::new(),
             tick_rate_ms: config.display.refresh_ms,
-            accent: config.accent_color_rgb(),
+            palette: Palette::from_config(config),
+            config: config.clone(),
+            theme_row: 0,
+            theme_error: None,
         })
     }
 
@@ -151,9 +163,16 @@ impl App {
                 history.push(percent);
             }
         }
+        if let Some(gpu) = self.gpu.as_ref() {
+            self.gpu_usage_history
+                .push(gpu.usage_percent().map_or(0.0, |value| value));
+            self.gpu_temp_history
+                .push(gpu.temperature_celsius().map_or(0.0, |value| value));
+        }
         if let Some(battery) = self.battery.batteries.first() {
-            self.battery_charge_history
-                .push(battery.capacity_percent as f32);
+            // Stored in mW so sub-watt values survive the braille chart's integer scale.
+            self.battery_power_history
+                .push(battery.power_now_uw.map_or(0.0, |uw| uw as f32 / 1000.0));
         }
     }
 
@@ -166,7 +185,8 @@ impl App {
             Tab::Network => Tab::Gpu,
             Tab::Gpu => Tab::Battery,
             Tab::Battery => Tab::Processes,
-            Tab::Processes => Tab::Cpu,
+            Tab::Processes => Tab::Theme,
+            Tab::Theme => Tab::Cpu,
         };
     }
 
@@ -180,7 +200,22 @@ impl App {
             Tab::Gpu => Tab::Network,
             Tab::Battery => Tab::Gpu,
             Tab::Processes => Tab::Battery,
+            Tab::Theme => Tab::Processes,
         };
+    }
+
+    /// Move the Theme-tab selection, wrapping around.
+    pub fn select_theme_row(&mut self, delta: i32) {
+        self.theme_row =
+            (self.theme_row as i32 + delta).rem_euclid(SLOT_NAMES.len() as i32) as usize;
+    }
+
+    /// Cycle the selected Theme-tab color and persist the palette.
+    pub fn cycle_theme_color(&mut self, delta: i32) {
+        let color = crate::theme::cycle(self.palette.slot(self.theme_row), delta);
+        self.palette.set_slot(self.theme_row, color);
+        self.palette.apply_to(&mut self.config);
+        self.theme_error = self.config.save().err().map(|error| error.to_string());
     }
 
     /// Set the refresh interval, clamped to the supported range.

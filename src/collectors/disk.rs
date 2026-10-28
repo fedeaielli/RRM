@@ -6,6 +6,7 @@ use std::time::Instant;
 /// Per-device disk I/O rates.
 pub struct DiskSample {
     pub device: String,
+    pub model: String,
     pub read_bytes_per_sec: f64,
     pub write_bytes_per_sec: f64,
 }
@@ -13,6 +14,7 @@ pub struct DiskSample {
 /// Per-mount space usage.
 pub struct PartitionSample {
     pub mount: String,
+    pub filesystem: String,
     pub total_bytes: u64,
     pub free_bytes: u64,
 }
@@ -98,6 +100,7 @@ impl Collector for DiskCollector {
             let write_rate = rate_bytes_per_sec(write_delta, elapsed_secs);
 
             io.push(DiskSample {
+                model: read_device_model(&stat.device),
                 device: stat.device,
                 read_bytes_per_sec: read_rate,
                 write_bytes_per_sec: write_rate,
@@ -202,6 +205,12 @@ fn read_zram() -> Vec<ZramSample> {
     zram
 }
 
+fn read_device_model(device: &str) -> String {
+    std::fs::read_to_string(format!("/sys/block/{device}/device/model"))
+        .map(|raw| raw.trim().to_string())
+        .unwrap_or_default()
+}
+
 fn read_u64(path: &str) -> anyhow::Result<u64> {
     Ok(std::fs::read_to_string(path)?.trim().parse::<u64>()?)
 }
@@ -212,6 +221,20 @@ fn parse_mm_stat(raw: &str) -> Option<u64> {
 }
 
 /// Read supported real filesystems from `/proc/mounts` and stat each mount.
+fn should_keep(filesystem: &str, key: (u64, u64), seen: &mut HashSet<(u64, u64)>) -> bool {
+    filesystem == "btrfs" || seen.insert(key)
+}
+
+/// Collapse a nested btrfs subvolume mount to its first path component, so
+/// `/var/log` and `/var/cache/pacman/pkg` both show up as `/var`.
+fn top_level(mount: &str) -> String {
+    let mut parts = mount.trim_start_matches('/').split('/');
+    match (parts.next(), parts.next()) {
+        (Some(first), Some(_)) => format!("/{first}"),
+        _ => mount.to_string(),
+    }
+}
+
 fn read_partitions() -> Vec<PartitionSample> {
     let Ok(contents) = std::fs::read_to_string("/proc/mounts") else {
         return Vec::new();
@@ -246,17 +269,31 @@ fn read_partitions() -> Vec<PartitionSample> {
 
         partitions.push(PartitionSample {
             mount,
+            filesystem: fstype.to_string(),
             total_bytes: u64::try_from(total).unwrap_or(u64::MAX),
             free_bytes: u64::try_from(free).unwrap_or(u64::MAX),
         });
     }
 
     // Bind mounts expose the same filesystem at several paths. Keep the shortest
-    // mount path for each identical (total, free) filesystem snapshot.
+    // mount path for each identical (total, free) snapshot. Btrfs subvolumes share
+    // the parent filesystem's stats, so keep every one of them.
     partitions.sort_by_key(|partition| partition.mount.len());
     let mut seen = HashSet::new();
-    partitions.retain(|partition| seen.insert((partition.total_bytes, partition.free_bytes)));
+    partitions.retain(|partition| {
+        should_keep(
+            &partition.filesystem,
+            (partition.total_bytes, partition.free_bytes),
+            &mut seen,
+        )
+    });
+    for partition in &mut partitions {
+        if partition.filesystem == "btrfs" {
+            partition.mount = top_level(&partition.mount);
+        }
+    }
     partitions.sort_by(|a, b| a.mount.cmp(&b.mount));
+    partitions.dedup_by(|a, b| a.mount == b.mount);
 
     partitions
 }
@@ -292,7 +329,8 @@ fn unescape_mount(input: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_mm_stat;
+    use super::{parse_mm_stat, should_keep, top_level};
+    use std::collections::HashSet;
 
     #[test]
     fn mm_stat_uses_mem_used_total() {
@@ -301,5 +339,22 @@ mod tests {
             Some(2048)
         );
         assert_eq!(parse_mm_stat(""), None);
+    }
+
+    #[test]
+    fn btrfs_subvolumes_survive_dedup() {
+        let mut seen = HashSet::new();
+        assert!(should_keep("btrfs", (100, 50), &mut seen));
+        assert!(should_keep("btrfs", (100, 50), &mut seen));
+        assert!(should_keep("ext4", (100, 50), &mut seen));
+        assert!(!should_keep("ext4", (100, 50), &mut seen));
+    }
+
+    #[test]
+    fn btrfs_mounts_collapse_to_top_level() {
+        assert_eq!(top_level("/var/log"), "/var");
+        assert_eq!(top_level("/var/cache/pacman/pkg"), "/var");
+        assert_eq!(top_level("/home"), "/home");
+        assert_eq!(top_level("/"), "/");
     }
 }

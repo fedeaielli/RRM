@@ -1,4 +1,4 @@
-use super::{DIM, WARN, accent, dim_text, render_empty, threshold_color};
+use super::{DIM, accent, dim_text, render_empty};
 use crate::app::App;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -35,14 +35,14 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
                 Style::default().fg(DIM)
             };
 
-            let cpu_color = threshold_color(process.cpu_percent);
+            let cpu_color = app.palette.threshold(process.cpu_percent);
             let mem_mib = process.mem_kb as f64 / 1024.0;
             let mem_color = if mem_mib < 50.0 {
                 DIM
             } else if mem_mib < 500.0 {
                 Color::Reset
             } else {
-                WARN
+                app.palette.warn
             };
 
             Row::new(vec![
