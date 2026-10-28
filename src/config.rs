@@ -23,6 +23,9 @@ pub struct ColorsConfig {
     pub tx: Option<String>,
     pub banner: Option<String>,
     pub background: Option<String>,
+    pub logo: Option<String>,
+    pub key: Option<String>,
+    pub value: Option<String>,
 }
 
 /// Display-related configuration.

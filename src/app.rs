@@ -433,11 +433,11 @@ mod tab_tests {
         app.select_theme_row(1);
         assert_eq!(app.theme_row, Some(7), "background is the first row shown");
         app.select_theme_row(-1);
-        assert_eq!(app.theme_row, Some(6), "banner is the last row shown");
+        assert_eq!(app.theme_row, Some(10), "value is the last row shown");
 
         app.theme_row = None;
         app.select_theme_row(-1);
-        assert_eq!(app.theme_row, Some(6));
+        assert_eq!(app.theme_row, Some(10));
     }
 
     #[test]
