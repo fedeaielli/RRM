@@ -53,6 +53,7 @@ async fn main() -> anyhow::Result<()> {
                     (KeyCode::Char('5'), _) => app.tab = Tab::Gpu,
                     (KeyCode::Char('6'), _) => app.tab = Tab::Battery,
                     (KeyCode::Char('7'), _) => app.tab = Tab::Processes,
+                    (KeyCode::Char('s'), _) => app.processes.toggle_sort(),
                     (KeyCode::Char('+'), _) => {
                         app.set_tick_rate(app.tick_rate_ms.saturating_add(100));
                         events.set_tick_rate(app.tick_rate_ms);
@@ -66,8 +67,13 @@ async fn main() -> anyhow::Result<()> {
             }
             AppEvent::Resize(w, h) => {
                 let _height = h;
-                app.cpu_history = RingBuffer::new(w as usize);
-                app.mem_history = RingBuffer::new(w as usize);
+                app.cpu_history = RingBuffer::new(w as usize * 2);
+                app.mem_history = RingBuffer::new(w as usize * 2);
+                app.swap_history = RingBuffer::new(w as usize * 2);
+                for history in &mut app.cpu_core_histories {
+                    *history = RingBuffer::new(w as usize * 2);
+                }
+                app.battery_charge_history = RingBuffer::new(w as usize * 2);
                 app.net_rx_history.clear();
                 app.net_tx_history.clear();
             }

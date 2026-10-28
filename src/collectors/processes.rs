@@ -61,6 +61,14 @@ impl ProcessCollector {
             SortBy::Mem => "mem",
         }
     }
+
+    /// Flip the ranking column between CPU and memory.
+    pub fn toggle_sort(&mut self) {
+        self.sort_by = match self.sort_by {
+            SortBy::Cpu => SortBy::Mem,
+            SortBy::Mem => SortBy::Cpu,
+        };
+    }
 }
 
 impl Collector for ProcessCollector {

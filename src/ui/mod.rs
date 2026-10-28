@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Tabs};
 
 pub mod battery;
+pub mod braille;
 pub mod cpu;
 pub mod disk;
 pub mod gpu;
@@ -13,18 +14,22 @@ pub mod memory;
 pub mod network;
 pub mod processes;
 
+/// Default chart fill.
+pub const CHART: Color = Color::Rgb(100, 210, 130);
 /// Healthy / low-load values.
-pub const GOOD: Color = Color::Green;
+pub const GOOD: Color = CHART;
 /// Elevated values.
-pub const WARN: Color = Color::Yellow;
+pub const WARN: Color = Color::Rgb(240, 180, 50);
 /// Critical values.
-pub const CRIT: Color = Color::Red;
+pub const CRIT: Color = Color::Rgb(220, 70, 70);
 /// Secondary labels, units, separators and idle rows.
-pub const DIM: Color = Color::DarkGray;
+pub const DIM: Color = Color::Rgb(70, 70, 80);
 /// Receive traffic.
-pub const CYAN: Color = Color::Cyan;
+pub const RX: Color = Color::Rgb(80, 180, 220);
 /// Transmit traffic.
-pub const MGNTA: Color = Color::Magenta;
+pub const TX: Color = Color::Rgb(180, 90, 220);
+/// Unfilled gauge track, dimmer than regular text.
+pub const IDLE: Color = Color::Rgb(30, 30, 40);
 
 /// Resolve the configured accent color.
 pub fn accent(app: &App) -> Color {
@@ -53,12 +58,60 @@ pub fn disk_usage_color(pct: f32) -> Color {
     }
 }
 
-/// Format a byte rate using KB/s below 1 MiB/s and MB/s above.
+/// One filled cell per percent step, each colored by the level it represents.
+pub fn segmented_bar(percent: f32, width: u16, color: impl Fn(f32) -> Color) -> Line<'static> {
+    let width = usize::from(width);
+    if width == 0 {
+        return Line::default();
+    }
+    let filled = ((percent / 100.0).clamp(0.0, 1.0) * width as f32).round() as usize;
+    let mut spans = Vec::new();
+    let mut start = 0;
+    while start < filled {
+        let shade = color(percent_at(start, width));
+        let mut end = start + 1;
+        while end < filled && color(percent_at(end, width)) == shade {
+            end += 1;
+        }
+        spans.push(Span::styled(
+            "█".repeat(end - start),
+            Style::default().fg(shade),
+        ));
+        start = end;
+    }
+    if filled < width {
+        spans.push(Span::styled(
+            "█".repeat(width - filled),
+            Style::default().fg(IDLE),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn percent_at(index: usize, width: usize) -> f32 {
+    (index as f32 + 0.5) / width as f32 * 100.0
+}
+
+/// Format a byte rate, picking B/s, KB/s or MB/s by magnitude.
 pub fn format_rate(bytes_per_sec: f64) -> String {
-    if bytes_per_sec < 1_048_576.0 {
-        format!("{:.1} KB/s", bytes_per_sec / 1024.0)
+    if bytes_per_sec < 1_024.0 {
+        format!("{bytes_per_sec:.0} B/s")
+    } else if bytes_per_sec < 1_048_576.0 {
+        format!("{:.1} KB/s", bytes_per_sec / 1_024.0)
     } else {
-        format!("{:.1} MB/s", bytes_per_sec / 1_048_576.0)
+        format!("{:.2} MB/s", bytes_per_sec / 1_048_576.0)
+    }
+}
+
+/// Format a byte count as MiB or GiB, whichever keeps it readable.
+pub fn format_bytes(bytes: u64) -> String {
+    const MIB: f64 = 1_048_576.0;
+    const GIB: f64 = 1_073_741_824.0;
+    let value = bytes as f64;
+    if value >= GIB {
+        format!("{:.1} GiB", value / GIB)
+    } else {
+        format!("{:.1} MiB", value / MIB)
     }
 }
 
@@ -151,5 +204,36 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Tab::Gpu => gpu::draw(frame, content_area, app),
         Tab::Battery => battery::draw(frame, content_area, app),
         Tab::Processes => processes::draw(frame, content_area, app),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CRIT, GOOD, IDLE, WARN, segmented_bar};
+    use ratatui::style::Color;
+
+    #[test]
+    fn segmented_bar_colors_by_level() {
+        let bar = segmented_bar(70.0, 100, super::threshold_color);
+        let colors: Vec<Option<Color>> = bar.spans.iter().map(|span| span.style.fg).collect();
+        assert_eq!(colors, vec![Some(GOOD), Some(WARN), Some(IDLE)]);
+
+        let total: usize = bar
+            .spans
+            .iter()
+            .map(|span| span.content.chars().count())
+            .sum();
+        assert_eq!(total, 100);
+
+        assert!(
+            segmented_bar(90.0, 100, super::threshold_color)
+                .spans
+                .iter()
+                .any(|span| span.style.fg == Some(CRIT))
+        );
+        assert_eq!(
+            segmented_bar(50.0, 0, super::threshold_color).spans.len(),
+            0
+        );
     }
 }

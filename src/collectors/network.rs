@@ -48,6 +48,8 @@ impl Collector for NetworkCollector {
     fn update(&mut self) -> anyhow::Result<()> {
         let stats = parse_net_dev()?;
         let elapsed_secs = self.prev_time.elapsed().as_secs_f64();
+        // The first update fires right after seeding, over a near-zero window.
+        let has_window = elapsed_secs >= 0.01;
 
         let mut latest = Vec::with_capacity(stats.len());
         let mut rx_counters = HashMap::with_capacity(stats.len());
@@ -70,8 +72,16 @@ impl Collector for NetworkCollector {
 
             latest.push(NetSample {
                 interface: stat.interface.clone(),
-                rx_bytes_per_sec: rate_bytes_per_sec(rx_delta, elapsed_secs),
-                tx_bytes_per_sec: rate_bytes_per_sec(tx_delta, elapsed_secs),
+                rx_bytes_per_sec: if has_window {
+                    rate_bytes_per_sec(rx_delta, elapsed_secs)
+                } else {
+                    0.0
+                },
+                tx_bytes_per_sec: if has_window {
+                    rate_bytes_per_sec(tx_delta, elapsed_secs)
+                } else {
+                    0.0
+                },
             });
 
             rx_counters.insert(stat.interface.clone(), stat.rx_bytes);
@@ -96,7 +106,16 @@ fn rate_bytes_per_sec(delta_bytes: u64, elapsed_secs: f64) -> f64 {
     delta_bytes as f64 / elapsed_secs
 }
 
-/// Parse `/proc/net/dev`, skipping the header lines and the loopback interface.
+/// Loopback and typical virtual/bridge interfaces.
+const VIRTUAL_PREFIXES: [&str; 8] = ["lo", "virbr", "docker", "veth", "br-", "vnet", "tun", "tap"];
+
+fn is_virtual(interface: &str) -> bool {
+    VIRTUAL_PREFIXES
+        .iter()
+        .any(|prefix| interface.starts_with(prefix))
+}
+
+/// Parse `/proc/net/dev`, skipping the header lines and virtual interfaces.
 fn parse_net_dev() -> anyhow::Result<Vec<NetStat>> {
     let contents = std::fs::read_to_string("/proc/net/dev")?;
     let mut stats = Vec::new();
@@ -107,19 +126,20 @@ fn parse_net_dev() -> anyhow::Result<Vec<NetStat>> {
             continue;
         };
         let interface = name.trim();
-        if interface.is_empty() || interface == "lo" {
+        if interface.is_empty() || is_virtual(interface) {
             continue;
         }
 
         let fields: Vec<&str> = rest.split_whitespace().collect();
-        if fields.len() < 10 {
+        if fields.len() < 9 {
             continue;
         }
 
         let Ok(rx_bytes) = fields[0].parse::<u64>() else {
             continue;
         };
-        let Ok(tx_bytes) = fields[9].parse::<u64>() else {
+        // rx_bytes is field 0; tx_bytes is field 8 (field 9 is tx_packets).
+        let Ok(tx_bytes) = fields[8].parse::<u64>() else {
             continue;
         };
 

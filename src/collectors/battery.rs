@@ -53,13 +53,22 @@ impl Collector for BatteryCollector {
                 .map(|raw| normalize_status(&raw))
                 .unwrap_or_else(|_| "Unknown".to_string());
 
+            // Some laptops expose charge_* (µAh) instead of energy_* (µWh).
+            // Keep all three from one family; only unitless ratios are displayed.
+            let use_energy = path.join("energy_full").exists();
+            let (now_attr, full_attr, design_attr) = if use_energy {
+                ("energy_now", "energy_full", "energy_full_design")
+            } else {
+                ("charge_now", "charge_full", "charge_full_design")
+            };
+
             batteries.push(BatterySample {
                 name: entry.file_name().to_string_lossy().into_owned(),
                 capacity_percent,
                 status,
-                energy_now_uwh: read_optional_u64(&path, "energy_now"),
-                energy_full_uwh: read_optional_u64(&path, "energy_full"),
-                energy_full_design_uwh: read_optional_u64(&path, "energy_full_design"),
+                energy_now_uwh: read_optional_u64(&path, now_attr),
+                energy_full_uwh: read_optional_u64(&path, full_attr),
+                energy_full_design_uwh: read_optional_u64(&path, design_attr),
             });
         }
 

@@ -1,10 +1,12 @@
-use super::{CRIT, CYAN, DIM, GOOD, WARN, accent, dim_text, panel, render_empty};
+use super::{
+    CRIT, DIM, GOOD, RX, WARN, accent, braille, dim_text, panel, render_empty, segmented_bar,
+};
 use crate::app::App;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use crate::history::RingBuffer;
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::symbols;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{LineGauge, Paragraph};
+use ratatui::text::Span;
+use ratatui::widgets::Paragraph;
 
 pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let accent = accent(app);
@@ -19,7 +21,13 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         .collect();
     let battery_areas = Layout::vertical(constraints).split(area);
 
-    for (battery, battery_area) in app.battery.batteries.iter().zip(battery_areas.iter()) {
+    for (index, (battery, battery_area)) in app
+        .battery
+        .batteries
+        .iter()
+        .zip(battery_areas.iter())
+        .enumerate()
+    {
         let block = panel(format!("battery — {}", battery.name.to_lowercase()), accent);
         let inner = block.inner(*battery_area);
         frame.render_widget(block, *battery_area);
@@ -27,117 +35,169 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             continue;
         }
 
-        let [charge_area, status_area, health_area, big_charge_area] = Layout::vertical([
-            Constraint::Length(3),
+        let [
+            charge_area,
+            health_area,
+            _,
+            history_label_area,
+            history_area,
+        ] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Min(0),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(2),
         ])
         .areas(inner);
 
-        let color = status_color(&battery.status, battery.capacity_percent);
-        draw_charge(frame, charge_area, battery, color);
-        draw_status(frame, status_area, battery, color);
-        draw_health(frame, health_area, battery);
-        draw_big_charge(frame, big_charge_area, battery.capacity_percent, color);
+        let color = charge_color(&battery.status, battery.capacity_percent);
+
+        draw_charge_row(
+            frame,
+            charge_area,
+            battery.capacity_percent,
+            &battery.status,
+        );
+        draw_health_row(frame, health_area, health_percent(battery));
+
+        let history = if index == 0 {
+            Some(&app.battery_charge_history)
+        } else {
+            None
+        };
+        draw_history(
+            frame,
+            history_label_area,
+            history_area,
+            battery.capacity_percent,
+            color,
+            history,
+        );
     }
 }
 
-fn draw_charge(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    battery: &crate::collectors::battery::BatterySample,
-    color: Color,
-) {
-    let [_, gauge_area, _] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
+fn draw_charge_row(frame: &mut ratatui::Frame, area: Rect, pct: u8, status: &str) {
+    if area.height == 0 {
+        return;
+    }
+
+    let [label_area, gauge_area, value_area] = Layout::horizontal([
+        Constraint::Length(10),
+        Constraint::Min(0),
+        Constraint::Length(18),
     ])
     .areas(area);
 
-    let label = Line::from(Span::styled(
-        format!("  {}%  —  {}  ", battery.capacity_percent, battery.status),
+    frame.render_widget(Paragraph::new(dim_text("charge")), label_area);
+    frame.render_widget(
+        Paragraph::new(segmented_bar(f32::from(pct), gauge_area.width, |level| {
+            charge_color(status, level as u8)
+        })),
+        gauge_area,
+    );
+
+    let value = Paragraph::new(Span::styled(
+        format!("{pct:>3}%  {status:<12}"),
+        Style::default()
+            .fg(charge_color(status, pct))
+            .add_modifier(Modifier::BOLD),
+    ));
+    frame.render_widget(value, value_area);
+}
+
+fn draw_health_row(frame: &mut ratatui::Frame, area: Rect, health: Option<f32>) {
+    if area.height == 0 {
+        return;
+    }
+
+    let Some(health) = health else {
+        let paragraph = Paragraph::new(dim_text("health  n/a  (charge_full_design not reported)"));
+        frame.render_widget(paragraph, area);
+        return;
+    };
+
+    let color = health_color(health);
+    let [label_area, gauge_area, value_area] = Layout::horizontal([
+        Constraint::Length(10),
+        Constraint::Min(0),
+        Constraint::Length(18),
+    ])
+    .areas(area);
+
+    frame.render_widget(Paragraph::new(dim_text("health")), label_area);
+    frame.render_widget(
+        Paragraph::new(segmented_bar(health, gauge_area.width, health_color)),
+        gauge_area,
+    );
+
+    let value = Paragraph::new(Span::styled(
+        format!("{:>6.1}%  {}", health, health_label(health)),
         Style::default().fg(color).add_modifier(Modifier::BOLD),
     ));
-    let gauge = LineGauge::default()
-        .filled_style(Style::default().fg(color))
-        .unfilled_style(Style::default().fg(DIM))
-        .line_set(symbols::line::THICK)
-        .label(label)
-        .ratio((f64::from(battery.capacity_percent) / 100.0).clamp(0.01, 1.0));
-    frame.render_widget(gauge, gauge_area);
+    frame.render_widget(value, value_area);
 }
 
-fn draw_status(
+fn draw_history(
     frame: &mut ratatui::Frame,
-    area: Rect,
-    battery: &crate::collectors::battery::BatterySample,
+    label_area: Rect,
+    chart_area: Rect,
+    pct: u8,
     color: Color,
+    history: Option<&RingBuffer>,
 ) {
-    let line = Line::from(vec![
-        dim_text("status: "),
-        Span::styled(
-            battery.status.clone(),
+    if label_area.height == 0 {
+        return;
+    }
+
+    let [title_area, value_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(8)]).areas(label_area);
+    frame.render_widget(Paragraph::new(dim_text("charge history")), title_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!("{pct:>3}%"),
             Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        dim_text("   capacity: "),
-        Span::styled(
-            format!("{}%", battery.capacity_percent),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(line), area);
+        ))
+        .alignment(ratatui::layout::Alignment::Right),
+        value_area,
+    );
+
+    if chart_area.height == 0 {
+        return;
+    }
+    let Some(history) = history else {
+        return;
+    };
+    // Fixed 0-100% scale, like the memory charts.
+    braille::render(
+        frame,
+        chart_area,
+        history,
+        10.0,
+        1000,
+        Style::default().fg(color),
+    );
 }
 
-fn draw_health(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    battery: &crate::collectors::battery::BatterySample,
-) {
-    let health = match (battery.energy_full_uwh, battery.energy_full_design_uwh) {
+fn health_percent(battery: &crate::collectors::battery::BatterySample) -> Option<f32> {
+    match (battery.energy_full_uwh, battery.energy_full_design_uwh) {
         (Some(full), Some(design)) if design > 0 => Some(full as f32 / design as f32 * 100.0),
         _ => None,
-    };
-
-    let line = match health {
-        Some(value) => Line::from(vec![
-            dim_text("health: "),
-            Span::styled(
-                format!("{value:.1}%"),
-                Style::default()
-                    .fg(health_color(value))
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        None => Line::from(dim_text(
-            "health: n/a  (energy_full_design not reported by this battery)",
-        )),
-    };
-    frame.render_widget(Paragraph::new(line), area);
+    }
 }
 
-fn draw_big_charge(frame: &mut ratatui::Frame, area: Rect, capacity_percent: u8, color: Color) {
-    let [_, number_area, _] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-
-    let big = format!("{capacity_percent}");
-    let paragraph = Paragraph::new(big)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(color).add_modifier(Modifier::BOLD));
-    frame.render_widget(paragraph, number_area);
-}
-
-fn status_color(status: &str, capacity_percent: u8) -> Color {
+fn charge_color(status: &str, pct: u8) -> Color {
     match status {
-        "Charging" => CYAN,
+        "Charging" | "Not charging" => RX,
         "Full" => GOOD,
-        "Discharging" => WARN,
-        "Not charging" if capacity_percent > 50 => CYAN,
+        "Discharging" => {
+            if pct > 50 {
+                GOOD
+            } else if pct > 20 {
+                WARN
+            } else {
+                CRIT
+            }
+        }
         _ => DIM,
     }
 }
@@ -145,9 +205,19 @@ fn status_color(status: &str, capacity_percent: u8) -> Color {
 fn health_color(health: f32) -> Color {
     if health > 80.0 {
         GOOD
-    } else if health >= 50.0 {
+    } else if health > 50.0 {
         WARN
     } else {
         CRIT
+    }
+}
+
+fn health_label(health: f32) -> &'static str {
+    if health > 80.0 {
+        "good"
+    } else if health > 50.0 {
+        "fair"
+    } else {
+        "poor"
     }
 }
