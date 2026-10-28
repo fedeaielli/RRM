@@ -13,6 +13,7 @@ pub mod gpu;
 pub mod memory;
 pub mod network;
 pub mod processes;
+pub mod system;
 pub mod theme;
 
 /// Secondary labels, units, separators and idle rows.
@@ -157,16 +158,25 @@ pub fn render_empty(frame: &mut Frame, area: Rect, title: &str, message: &str, a
 
 /// Render the tab bar and the active tab's content.
 pub fn draw(frame: &mut Frame, app: &App) {
-    let area = frame.area();
+    let full = frame.area();
     frame.render_widget(
         Block::default().style(Style::default().bg(app.palette.background)),
-        area,
+        full,
     );
+    // Background keeps the full terminal; the dim borders sit two cells in on
+    // the sides and at the bottom, one row in at the top.
+    let area = Rect {
+        x: full.x.saturating_add(2),
+        y: full.y.saturating_add(1),
+        width: full.width.saturating_sub(4),
+        height: full.height.saturating_sub(2),
+    };
 
     let [tab_area, content_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
 
     let titles = [
+        "system",
         "cpu",
         "memory",
         "disk",
@@ -177,14 +187,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
         "theme",
     ];
     let selected = match app.tab {
-        Tab::Cpu => 0,
-        Tab::Memory => 1,
-        Tab::Disk => 2,
-        Tab::Network => 3,
-        Tab::Gpu => 4,
-        Tab::Battery => 5,
-        Tab::Processes => 6,
-        Tab::Theme => 7,
+        Tab::System => 0,
+        Tab::Cpu => 1,
+        Tab::Memory => 2,
+        Tab::Disk => 3,
+        Tab::Network => 4,
+        Tab::Gpu => 5,
+        Tab::Battery => 6,
+        Tab::Processes => 7,
+        Tab::Theme => 8,
     };
 
     let accent = accent(app);
@@ -201,6 +212,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     );
 
     match app.tab {
+        Tab::System => system::draw(frame, content_area, app),
         Tab::Cpu => cpu::draw(frame, content_area, app),
         Tab::Memory => memory::draw(frame, content_area, app),
         Tab::Disk => disk::draw(frame, content_area, app),
@@ -233,6 +245,14 @@ mod tests {
         assert_eq!(buffer[(2, 10)].bg, app.palette.background);
         // The tab bar must be painted too, not left transparent.
         assert_eq!(buffer[(3, 2)].bg, app.palette.background);
+        // Borders are inset by two cells (one row at the top) over a full background.
+        assert_eq!(buffer[(0, 0)].symbol(), " ");
+        assert_eq!(buffer[(1, 0)].symbol(), " ");
+        assert_eq!(buffer[(2, 0)].symbol(), " ");
+        assert_eq!(buffer[(2, 1)].symbol(), "╭");
+        assert_eq!(buffer[(2, 23)].symbol(), " ");
+        assert_eq!(buffer[(2, 23)].bg, app.palette.background);
+        assert_eq!(buffer[(77, 1)].symbol(), "╮");
 
         let mut transparent = App::new(&Config::default(), 80).unwrap();
         transparent.palette.background = Color::Reset;
@@ -248,8 +268,9 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
             terminal.draw(|f| super::draw(f, &app)).unwrap();
             let buffer = terminal.backend().buffer();
-            let row: Vec<String> = (2..width - 2)
-                .map(|x| buffer[(x, 1)].symbol().to_string())
+            // Inner row: two inset columns plus the block border on each side.
+            let row: Vec<String> = (3..width - 3)
+                .map(|x| buffer[(x, 2)].symbol().to_string())
                 .collect();
             let first = row.iter().position(|symbol| symbol != " ").unwrap();
             let last = row.iter().rposition(|symbol| symbol != " ").unwrap();
@@ -275,7 +296,7 @@ mod tests {
         terminal.draw(|f| super::draw(f, &app)).unwrap();
         let buffer = terminal.backend().buffer();
         let row: String = (0..40)
-            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .map(|x| buffer[(x, 2)].symbol().to_string())
             .collect();
         assert!(row.contains("cpu"));
         assert!(row.contains("network"));

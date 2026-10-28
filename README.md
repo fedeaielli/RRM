@@ -25,7 +25,7 @@ Configuration is optional. RRM reads it from `$XDG_CONFIG_HOME/rrm/config.toml`,
 | `accent_color` | `display` | string | `"#00BFFF"` | Accent color as a `#RRGGBB` hex value |
 | `top_n` | `processes` | integer | `15` | Number of processes shown in the Processes tab |
 | `sort_by` | `processes` | string | `"cpu"` | Process sort column: `"cpu"` or `"mem"` |
-| `accent`, `good`, `warn`, `crit`, `rx`, `tx`, `banner` | `colors` | string | palette defaults | Palette overrides as `#RRGGBB`; edited from the Theme tab |
+| `accent`, `good`, `warn`, `crit`, `rx`, `tx`, `banner`, `background` | `colors` | string | palette defaults | Palette overrides as `#RRGGBB` (or `transparent`); edited from the Theme tab |
 
 Example:
 
@@ -53,7 +53,7 @@ banner = "#B45ADC"
 | Key | Action |
 |-----|--------|
 | ←/→ or Tab/Shift+Tab | Previous/Next tab |
-| 1-7 | Jump to tab |
+| 1-8 | Jump to tab |
 | PageDown | Open the theme tab (nothing selected) |
 | ↑/↓ (Theme tab) | Select palette entry |
 | ←/→ (Theme tab) | Change the selected color (saved to config.toml) |
@@ -63,6 +63,7 @@ banner = "#B45ADC"
 
 ## Supported Metrics
 
+- System overview: distro, host, kernel, uptime, packages, shell, desktop, terminal, CPU/GPU, memory, disk, load
 - CPU usage (total and per-core), frequency, and temperature
 - RAM and swap usage
 - Disk I/O rates and partition space
