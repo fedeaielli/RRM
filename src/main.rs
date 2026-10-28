@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
                     (KeyCode::Char('6'), _) => app.tab = Tab::Gpu,
                     (KeyCode::Char('7'), _) => app.tab = Tab::Battery,
                     (KeyCode::Char('8'), _) => app.tab = Tab::Processes,
+                    (KeyCode::Char('9'), _) => app.tab = Tab::Fans,
                     (KeyCode::PageDown, _) => app.open_theme(),
                     (KeyCode::Char('s'), _) => app.processes.toggle_sort(),
                     (KeyCode::Char('+'), _) => {
@@ -97,6 +98,8 @@ async fn main() -> anyhow::Result<()> {
                 app.gpu_temp_history = RingBuffer::new(w as usize * 2);
                 app.net_rx_history.clear();
                 app.net_tx_history.clear();
+                // Rebuilt at the new width on the next tick.
+                app.fan_histories = std::collections::HashMap::new();
             }
         }
     }

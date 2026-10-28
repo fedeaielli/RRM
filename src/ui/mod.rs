@@ -9,6 +9,7 @@ pub mod battery;
 pub mod braille;
 pub mod cpu;
 pub mod disk;
+pub mod fans;
 pub mod gpu;
 pub mod memory;
 pub mod network;
@@ -184,6 +185,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         "gpu",
         "battery",
         "processes",
+        "fans",
         "theme",
     ];
     let selected = match app.tab {
@@ -195,7 +197,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Tab::Gpu => 5,
         Tab::Battery => 6,
         Tab::Processes => 7,
-        Tab::Theme => 8,
+        Tab::Fans => 8,
+        Tab::Theme => 9,
     };
 
     let accent = accent(app);
@@ -220,6 +223,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Tab::Gpu => gpu::draw(frame, content_area, app),
         Tab::Battery => battery::draw(frame, content_area, app),
         Tab::Processes => processes::draw(frame, content_area, app),
+        Tab::Fans => fans::draw(frame, content_area, app),
         Tab::Theme => theme::draw(frame, content_area, app),
     }
 }
