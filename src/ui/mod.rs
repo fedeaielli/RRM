@@ -13,49 +13,16 @@ pub mod gpu;
 pub mod memory;
 pub mod network;
 pub mod processes;
+pub mod theme;
 
-/// Default chart fill.
-pub const CHART: Color = Color::Rgb(100, 210, 130);
-/// Healthy / low-load values.
-pub const GOOD: Color = CHART;
-/// Elevated values.
-pub const WARN: Color = Color::Rgb(240, 180, 50);
-/// Critical values.
-pub const CRIT: Color = Color::Rgb(220, 70, 70);
 /// Secondary labels, units, separators and idle rows.
 pub const DIM: Color = Color::Rgb(70, 70, 80);
-/// Receive traffic.
-pub const RX: Color = Color::Rgb(80, 180, 220);
-/// Transmit traffic.
-pub const TX: Color = Color::Rgb(180, 90, 220);
 /// Unfilled gauge track, dimmer than regular text.
 pub const IDLE: Color = Color::Rgb(30, 30, 40);
 
 /// Resolve the configured accent color.
 pub fn accent(app: &App) -> Color {
-    Color::Rgb(app.accent.0, app.accent.1, app.accent.2)
-}
-
-/// Compact load threshold: good below 60%, warning to 85%, critical above.
-pub fn threshold_color(pct: f32) -> Color {
-    if pct < 60.0 {
-        GOOD
-    } else if pct <= 85.0 {
-        WARN
-    } else {
-        CRIT
-    }
-}
-
-/// Disk usage threshold: good below 70%, warning to 85%, critical above.
-pub fn disk_usage_color(pct: f32) -> Color {
-    if pct < 70.0 {
-        GOOD
-    } else if pct <= 85.0 {
-        WARN
-    } else {
-        CRIT
-    }
+    app.palette.accent
 }
 
 /// One filled cell per percent step, each colored by the level it represents.
@@ -168,6 +135,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         "gpu",
         "battery",
         "processes",
+        "theme",
     ];
     let selected = match app.tab {
         Tab::Cpu => 0,
@@ -177,6 +145,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Tab::Gpu => 4,
         Tab::Battery => 5,
         Tab::Processes => 6,
+        Tab::Theme => 7,
     };
 
     let accent = accent(app);
@@ -204,19 +173,25 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Tab::Gpu => gpu::draw(frame, content_area, app),
         Tab::Battery => battery::draw(frame, content_area, app),
         Tab::Processes => processes::draw(frame, content_area, app),
+        Tab::Theme => theme::draw(frame, content_area, app),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CRIT, GOOD, IDLE, WARN, segmented_bar};
+    use super::{IDLE, segmented_bar};
+    use crate::theme::Palette;
     use ratatui::style::Color;
 
     #[test]
     fn segmented_bar_colors_by_level() {
-        let bar = segmented_bar(70.0, 100, super::threshold_color);
+        let palette = Palette::default();
+        let bar = segmented_bar(70.0, 100, |value| palette.threshold(value));
         let colors: Vec<Option<Color>> = bar.spans.iter().map(|span| span.style.fg).collect();
-        assert_eq!(colors, vec![Some(GOOD), Some(WARN), Some(IDLE)]);
+        assert_eq!(
+            colors,
+            vec![Some(palette.good), Some(palette.warn), Some(IDLE)]
+        );
 
         let total: usize = bar
             .spans
@@ -226,14 +201,23 @@ mod tests {
         assert_eq!(total, 100);
 
         assert!(
-            segmented_bar(90.0, 100, super::threshold_color)
+            segmented_bar(90.0, 100, |value| palette.threshold(value))
                 .spans
                 .iter()
-                .any(|span| span.style.fg == Some(CRIT))
+                .any(|span| span.style.fg == Some(palette.crit))
         );
         assert_eq!(
-            segmented_bar(50.0, 0, super::threshold_color).spans.len(),
+            segmented_bar(50.0, 0, |value| palette.threshold(value))
+                .spans
+                .len(),
             0
         );
+
+        let mono: Vec<Option<Color>> = segmented_bar(70.0, 100, |_| palette.good)
+            .spans
+            .iter()
+            .map(|span| span.style.fg)
+            .collect();
+        assert_eq!(mono, vec![Some(palette.good), Some(IDLE)]);
     }
 }

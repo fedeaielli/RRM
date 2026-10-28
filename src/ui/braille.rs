@@ -40,6 +40,24 @@ pub fn render(
     }
 }
 
+/// Like `render`, but with a fixed vertical scale: values above `max` stay at
+/// full height instead of stretching the scale.
+pub fn render_fixed(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    history: &RingBuffer,
+    scale: f32,
+    max: u64,
+    style: Style,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let points = area.width as usize * 2;
+    let data = window(history, points, scale);
+    draw_bars(frame.buffer_mut(), area, &data, max.max(1), style, false);
+}
+
 /// Draw read above a centre baseline and write below it, sharing one scale.
 #[allow(clippy::too_many_arguments)]
 pub fn render_split(
@@ -170,7 +188,11 @@ fn cell_char_series(left: usize, right: usize, row: usize, height: usize, flip: 
 
 #[cfg(test)]
 mod tests {
-    use super::{RingBuffer, Style, cell_char, cell_char_series, filled, render, render_split};
+    use super::{
+        RingBuffer, Style, cell_char, cell_char_series, filled, render, render_fixed, render_split,
+    };
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn filled_clamps_to_one_dot_and_bottom() {
@@ -201,9 +223,6 @@ mod tests {
 
     #[test]
     fn renders_braille_symbols_into_buffer() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
-
         let mut history = RingBuffer::new(4);
         history.push(100.0);
         let mut terminal =
@@ -225,10 +244,32 @@ mod tests {
     }
 
     #[test]
-    fn renders_up_and_down_into_buffer() {
-        use ratatui::Terminal;
-        use ratatui::backend::TestBackend;
+    fn fixed_scale_caps_tall_values() {
+        fn draw(values: &[f32]) -> String {
+            let mut history = RingBuffer::new(8);
+            for value in values {
+                history.push(*value);
+            }
+            let mut terminal = Terminal::new(TestBackend::new(2, 2)).unwrap();
+            terminal
+                .draw(|f| {
+                    render_fixed(f, f.area(), &history, 1.0, 30_000, Style::default());
+                })
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..2)
+                .flat_map(|y| (0..2).map(move |x| (x, y)))
+                .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+                .collect()
+        }
 
+        // Anything above the cap renders exactly like the cap.
+        assert_eq!(draw(&[10_000.0, 60_000.0]), draw(&[10_000.0, 30_000.0]));
+        assert_ne!(draw(&[10_000.0, 15_000.0]), draw(&[10_000.0, 30_000.0]));
+    }
+
+    #[test]
+    fn renders_up_and_down_into_buffer() {
         let mut up = RingBuffer::new(4);
         up.push(100.0);
         let mut down = RingBuffer::new(4);

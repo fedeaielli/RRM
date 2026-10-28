@@ -11,6 +11,7 @@ pub struct CpuSample {
 /// Collects CPU usage, frequency and temperature from `/proc` and `/sys`.
 pub struct CpuCollector {
     pub latest: CpuSample,
+    pub model: String,
     prev_idle: Vec<u64>,
     prev_total: Vec<u64>,
 }
@@ -34,10 +35,26 @@ impl CpuCollector {
                 frequencies_mhz: vec![0; cores.len()],
                 temperature_celsius: None,
             },
+            model: read_model(),
             prev_idle,
             prev_total,
         })
     }
+}
+
+/// Read the `model name` field from `/proc/cpuinfo`.
+fn read_model() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|raw| parse_model(&raw))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn parse_model(raw: &str) -> Option<String> {
+    raw.lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        (key.trim() == "model name").then(|| value.trim().to_string())
+    })
 }
 
 impl Collector for CpuCollector {
@@ -188,4 +205,16 @@ fn read_temperature() -> Option<f32> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_model;
+
+    #[test]
+    fn parse_model_reads_cpuinfo() {
+        let raw = "processor\t: 0\nmodel name\t: AMD Ryzen 7 7840U\n\n";
+        assert_eq!(parse_model(raw).as_deref(), Some("AMD Ryzen 7 7840U"));
+        assert_eq!(parse_model("processor\t: 0\n"), None);
+    }
 }

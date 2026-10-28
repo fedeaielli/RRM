@@ -3,6 +3,7 @@ mod collectors;
 mod config;
 mod event;
 mod history;
+mod theme;
 mod ui;
 
 use app::{App, Tab};
@@ -44,8 +45,24 @@ async fn main() -> anyhow::Result<()> {
                 use crossterm::event::{KeyCode, KeyModifiers};
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
-                    (KeyCode::Right, _) => app.next_tab(),
-                    (KeyCode::Left, _) => app.prev_tab(),
+                    (KeyCode::Tab, _) => app.next_tab(),
+                    (KeyCode::BackTab, _) => app.prev_tab(),
+                    (KeyCode::Right, _) => {
+                        if app.tab == Tab::Theme {
+                            app.cycle_theme_color(1);
+                        } else {
+                            app.next_tab();
+                        }
+                    }
+                    (KeyCode::Left, _) => {
+                        if app.tab == Tab::Theme {
+                            app.cycle_theme_color(-1);
+                        } else {
+                            app.prev_tab();
+                        }
+                    }
+                    (KeyCode::Up, _) if app.tab == Tab::Theme => app.select_theme_row(-1),
+                    (KeyCode::Down, _) if app.tab == Tab::Theme => app.select_theme_row(1),
                     (KeyCode::Char('1'), _) => app.tab = Tab::Cpu,
                     (KeyCode::Char('2'), _) => app.tab = Tab::Memory,
                     (KeyCode::Char('3'), _) => app.tab = Tab::Disk,
@@ -53,6 +70,7 @@ async fn main() -> anyhow::Result<()> {
                     (KeyCode::Char('5'), _) => app.tab = Tab::Gpu,
                     (KeyCode::Char('6'), _) => app.tab = Tab::Battery,
                     (KeyCode::Char('7'), _) => app.tab = Tab::Processes,
+                    (KeyCode::Char('8'), _) => app.tab = Tab::Theme,
                     (KeyCode::Char('s'), _) => app.processes.toggle_sort(),
                     (KeyCode::Char('+'), _) => {
                         app.set_tick_rate(app.tick_rate_ms.saturating_add(100));
@@ -73,7 +91,9 @@ async fn main() -> anyhow::Result<()> {
                 for history in &mut app.cpu_core_histories {
                     *history = RingBuffer::new(w as usize * 2);
                 }
-                app.battery_charge_history = RingBuffer::new(w as usize * 2);
+                app.battery_power_history = RingBuffer::new(w as usize * 2);
+                app.gpu_usage_history = RingBuffer::new(w as usize * 2);
+                app.gpu_temp_history = RingBuffer::new(w as usize * 2);
                 app.net_rx_history.clear();
                 app.net_tx_history.clear();
             }

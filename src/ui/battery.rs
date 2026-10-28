@@ -1,8 +1,8 @@
-use super::{
-    CRIT, DIM, GOOD, RX, WARN, accent, braille, dim_text, panel, render_empty, segmented_bar,
-};
+use super::{DIM, accent, braille, dim_text, panel, render_empty, segmented_bar};
 use crate::app::App;
+use crate::collectors::battery::BatterySample;
 use crate::history::RingBuffer;
+use crate::theme::Palette;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -28,187 +28,178 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         .zip(battery_areas.iter())
         .enumerate()
     {
-        let block = panel(format!("battery — {}", battery.name.to_lowercase()), accent);
-        let inner = block.inner(*battery_area);
-        frame.render_widget(block, *battery_area);
-        if inner.height == 0 {
-            continue;
-        }
-
-        let [
-            charge_area,
-            health_area,
-            _,
-            history_label_area,
-            history_area,
-        ] = Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(2),
+        let [charge_area, health_area, history_area] = Layout::vertical([
+            Constraint::Length(3),
+            Constraint::Length(3),
+            Constraint::Min(4),
         ])
-        .areas(inner);
+        .areas(*battery_area);
 
-        let color = charge_color(&battery.status, battery.capacity_percent);
-
-        draw_charge_row(
+        draw_charge(frame, charge_area, battery, accent, &app.palette);
+        draw_health(
             frame,
-            charge_area,
-            battery.capacity_percent,
-            &battery.status,
+            health_area,
+            health_percent(battery),
+            accent,
+            &app.palette,
         );
-        draw_health_row(frame, health_area, health_percent(battery));
 
         let history = if index == 0 {
-            Some(&app.battery_charge_history)
+            Some(&app.battery_power_history)
         } else {
             None
         };
-        draw_history(
+        draw_power(
             frame,
-            history_label_area,
             history_area,
-            battery.capacity_percent,
-            color,
+            battery.power_now_uw,
             history,
+            accent,
+            &app.palette,
         );
     }
 }
 
-fn draw_charge_row(frame: &mut ratatui::Frame, area: Rect, pct: u8, status: &str) {
-    if area.height == 0 {
+fn draw_charge(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    battery: &BatterySample,
+    accent: Color,
+    palette: &Palette,
+) {
+    let block = panel(format!("{} — charge", battery.name.to_lowercase()), accent);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
         return;
     }
 
-    let [label_area, gauge_area, value_area] = Layout::horizontal([
-        Constraint::Length(10),
-        Constraint::Min(0),
-        Constraint::Length(18),
-    ])
-    .areas(area);
+    let [bar_area, value_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(18)]).areas(inner);
 
-    frame.render_widget(Paragraph::new(dim_text("charge")), label_area);
+    let pct = battery.capacity_percent;
+    let status = battery.status.as_str();
     frame.render_widget(
-        Paragraph::new(segmented_bar(f32::from(pct), gauge_area.width, |level| {
-            charge_color(status, level as u8)
+        Paragraph::new(segmented_bar(f32::from(pct), bar_area.width, |_| {
+            charge_color(status, pct, palette)
         })),
-        gauge_area,
+        bar_area,
     );
-
-    let value = Paragraph::new(Span::styled(
-        format!("{pct:>3}%  {status:<12}"),
-        Style::default()
-            .fg(charge_color(status, pct))
-            .add_modifier(Modifier::BOLD),
-    ));
-    frame.render_widget(value, value_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!("{pct:>3}%  {status:<12}"),
+            Style::default()
+                .fg(charge_color(status, pct, palette))
+                .add_modifier(Modifier::BOLD),
+        )),
+        value_area,
+    );
 }
 
-fn draw_health_row(frame: &mut ratatui::Frame, area: Rect, health: Option<f32>) {
-    if area.height == 0 {
+fn draw_health(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    health: Option<f32>,
+    accent: Color,
+    palette: &Palette,
+) {
+    let block = panel("health", accent);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
         return;
     }
 
     let Some(health) = health else {
-        let paragraph = Paragraph::new(dim_text("health  n/a  (charge_full_design not reported)"));
-        frame.render_widget(paragraph, area);
+        frame.render_widget(
+            Paragraph::new(dim_text("n/a  (charge_full_design not reported)")),
+            inner,
+        );
         return;
     };
 
-    let color = health_color(health);
-    let [label_area, gauge_area, value_area] = Layout::horizontal([
-        Constraint::Length(10),
-        Constraint::Min(0),
-        Constraint::Length(18),
-    ])
-    .areas(area);
+    let [bar_area, value_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(18)]).areas(inner);
 
-    frame.render_widget(Paragraph::new(dim_text("health")), label_area);
     frame.render_widget(
-        Paragraph::new(segmented_bar(health, gauge_area.width, health_color)),
-        gauge_area,
+        Paragraph::new(segmented_bar(health, bar_area.width, |_| {
+            health_color(health, palette)
+        })),
+        bar_area,
     );
-
-    let value = Paragraph::new(Span::styled(
-        format!("{:>6.1}%  {}", health, health_label(health)),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
-    ));
-    frame.render_widget(value, value_area);
-}
-
-fn draw_history(
-    frame: &mut ratatui::Frame,
-    label_area: Rect,
-    chart_area: Rect,
-    pct: u8,
-    color: Color,
-    history: Option<&RingBuffer>,
-) {
-    if label_area.height == 0 {
-        return;
-    }
-
-    let [title_area, value_area] =
-        Layout::horizontal([Constraint::Min(0), Constraint::Length(8)]).areas(label_area);
-    frame.render_widget(Paragraph::new(dim_text("charge history")), title_area);
     frame.render_widget(
         Paragraph::new(Span::styled(
-            format!("{pct:>3}%"),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        ))
-        .alignment(ratatui::layout::Alignment::Right),
+            format!("{:>6.1}%  {}", health, health_label(health)),
+            Style::default()
+                .fg(health_color(health, palette))
+                .add_modifier(Modifier::BOLD),
+        )),
         value_area,
     );
+}
 
-    if chart_area.height == 0 {
-        return;
-    }
-    let Some(history) = history else {
+fn draw_power(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    power_uw: Option<u64>,
+    history: Option<&RingBuffer>,
+    accent: Color,
+    palette: &Palette,
+) {
+    let title = power_uw.map_or_else(
+        || "power draw  n/a".to_string(),
+        |uw| format!("power draw  {:.1} W", uw as f32 / 1_000_000.0),
+    );
+    let block = panel(title, accent);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let (Some(history), Some(uw)) = (history, power_uw) else {
         return;
     };
-    // Fixed 0-100% scale, like the memory charts.
-    braille::render(
+    let color = palette.threshold(uw as f32 / 1_000_000.0);
+    // History is in mW: fixed 0-30 W scale.
+    braille::render_fixed(
         frame,
-        chart_area,
+        inner,
         history,
-        10.0,
-        1000,
+        1.0,
+        30_000,
         Style::default().fg(color),
     );
 }
 
-fn health_percent(battery: &crate::collectors::battery::BatterySample) -> Option<f32> {
+fn health_percent(battery: &BatterySample) -> Option<f32> {
     match (battery.energy_full_uwh, battery.energy_full_design_uwh) {
         (Some(full), Some(design)) if design > 0 => Some(full as f32 / design as f32 * 100.0),
         _ => None,
     }
 }
 
-fn charge_color(status: &str, pct: u8) -> Color {
+fn charge_color(status: &str, pct: u8, palette: &Palette) -> Color {
     match status {
-        "Charging" | "Not charging" => RX,
-        "Full" => GOOD,
+        "Charging" | "Not charging" => palette.rx,
+        "Full" => palette.good,
         "Discharging" => {
             if pct > 50 {
-                GOOD
+                palette.good
             } else if pct > 20 {
-                WARN
+                palette.warn
             } else {
-                CRIT
+                palette.crit
             }
         }
         _ => DIM,
     }
 }
 
-fn health_color(health: f32) -> Color {
+fn health_color(health: f32, palette: &Palette) -> Color {
     if health > 80.0 {
-        GOOD
+        palette.good
     } else if health > 50.0 {
-        WARN
+        palette.warn
     } else {
-        CRIT
+        palette.crit
     }
 }
 
@@ -219,5 +210,42 @@ fn health_label(health: f32) -> &'static str {
         "fair"
     } else {
         "poor"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::App;
+    use crate::config::Config;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use ratatui::layout::Rect;
+
+    #[test]
+    fn renders_three_sections_and_history_chart() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        if app.battery.batteries.is_empty() {
+            return;
+        }
+        for i in 0..160 {
+            app.battery_power_history
+                .push(5000.0 + (i % 30) as f32 * 500.0);
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
+        terminal
+            .draw(|f| super::draw(f, Rect::new(0, 0, 80, 16), &app))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..16)
+            .flat_map(|y| (0..80).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+            .collect();
+        assert!(text.contains("charge"));
+        assert!(text.contains("health"));
+        assert!(text.contains("power draw"));
+        assert!(text.chars().any(|c| c >= '\u{2800}'));
+        assert!(text.contains('█'), "battery bars should be solid blocks");
     }
 }

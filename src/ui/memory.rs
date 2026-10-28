@@ -1,6 +1,7 @@
-use super::{accent, braille, dim_text, panel, render_empty, segmented_bar, threshold_color};
+use super::{accent, braille, dim_text, panel, render_empty, segmented_bar};
 use crate::app::App;
 use crate::history::RingBuffer;
+use crate::theme::Palette;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
@@ -15,7 +16,10 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
 
-    let block = panel("memory", accent);
+    let block = panel(
+        format!("memory — {} GiB", memory.total_kb / 1_048_576),
+        accent,
+    );
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -41,6 +45,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         memory.total_kb,
         ram_percent,
         accent,
+        &app.palette,
     );
     draw_chart(
         frame,
@@ -49,6 +54,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         &app.mem_history,
         ram_percent,
         accent,
+        &app.palette,
     );
 
     if memory.swap_total_kb == 0 {
@@ -70,6 +76,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             memory.swap_total_kb,
             swap_percent,
             accent,
+            &app.palette,
         );
         draw_chart(
             frame,
@@ -78,10 +85,12 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             &app.swap_history,
             swap_percent,
             accent,
+            &app.palette,
         );
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_gauge_row(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -90,6 +99,7 @@ fn draw_gauge_row(
     total_kb: u64,
     percent: f32,
     accent: Color,
+    palette: &Palette,
 ) {
     if area.height == 0 {
         return;
@@ -101,10 +111,13 @@ fn draw_gauge_row(
         Constraint::Fill(1),
     ])
     .areas(area);
-    let [label_area, gauge_area, value_area] = Layout::horizontal([
-        Constraint::Length(22),
+    let [_, label_area, gauge_area, _, value_area, _] = Layout::horizontal([
+        Constraint::Length(1),
+        Constraint::Length(6),
         Constraint::Min(0),
+        Constraint::Length(3),
         Constraint::Length(20),
+        Constraint::Length(1),
     ])
     .areas(row_area);
 
@@ -114,9 +127,11 @@ fn draw_gauge_row(
     ));
     frame.render_widget(label, label_area);
 
-    let color = threshold_color(percent);
+    let color = palette.threshold(percent);
     frame.render_widget(
-        Paragraph::new(segmented_bar(percent, gauge_area.width, threshold_color)),
+        Paragraph::new(segmented_bar(percent, gauge_area.width, |value| {
+            palette.threshold(value)
+        })),
         gauge_area,
     );
 
@@ -144,7 +159,9 @@ fn draw_disabled_row(frame: &mut ratatui::Frame, area: Rect, text: &str) {
         Constraint::Fill(1),
     ])
     .areas(area);
-    frame.render_widget(Paragraph::new(dim_text(text)), line_area);
+    let [_, text_area] =
+        Layout::horizontal([Constraint::Length(1), Constraint::Min(0)]).areas(line_area);
+    frame.render_widget(Paragraph::new(dim_text(text)), text_area);
 }
 
 fn draw_chart(
@@ -154,6 +171,7 @@ fn draw_chart(
     history: &RingBuffer,
     percent: f32,
     accent: Color,
+    palette: &Palette,
 ) {
     let block = panel(title, accent);
     let inner = block.inner(area);
@@ -164,7 +182,7 @@ fn draw_chart(
         history,
         10.0,
         1000,
-        Style::default().fg(threshold_color(percent)),
+        Style::default().fg(palette.threshold(percent)),
     );
 }
 

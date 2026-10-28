@@ -1,9 +1,10 @@
-use super::{RX, TX, accent, braille, dim_text, format_rate, panel, render_empty};
+use super::{DIM, accent, braille, dim_text, format_rate, panel, render_empty};
 use crate::app::App;
 use crate::history::RingBuffer;
+use crate::theme::Palette;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 const MAX_SHOWN: usize = 3;
@@ -56,59 +57,65 @@ fn draw_interface(
         return;
     }
 
-    let [rx_label_area, rx_chart_area, tx_label_area, tx_chart_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(2),
-        Constraint::Length(1),
-        Constraint::Min(2),
-    ])
-    .areas(inner);
+    let [rates_area, chart_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
 
     frame.render_widget(
-        Paragraph::new(rate_line("rx", sample.rx_bytes_per_sec, RX)),
-        rx_label_area,
+        Paragraph::new(rates_line(
+            sample.rx_bytes_per_sec,
+            sample.tx_bytes_per_sec,
+            &app.palette,
+        )),
+        rates_area,
     );
-    draw_history(
+    draw_traffic(
         frame,
-        rx_chart_area,
+        chart_area,
         app.net_rx_history.get(&sample.interface),
-        RX,
-    );
-
-    frame.render_widget(
-        Paragraph::new(rate_line("tx", sample.tx_bytes_per_sec, TX)),
-        tx_label_area,
-    );
-    draw_history(
-        frame,
-        tx_chart_area,
         app.net_tx_history.get(&sample.interface),
-        TX,
+        &app.palette,
     );
 }
 
-fn draw_history(
+fn draw_traffic(
     frame: &mut ratatui::Frame,
     area: Rect,
-    history: Option<&RingBuffer>,
-    color: Color,
+    rx: Option<&RingBuffer>,
+    tx: Option<&RingBuffer>,
+    palette: &Palette,
 ) {
-    let Some(history) = history else {
+    let (Some(rx), Some(tx)) = (rx, tx) else {
         return;
     };
-    braille::render(
+    braille::render_split(
         frame,
         area,
-        history,
-        1.0 / 1024.0,
+        rx,
+        tx,
+        1.0,
         1,
-        Style::default().fg(color),
+        Style::default().fg(palette.rx),
+        Style::default().fg(palette.tx),
+        Style::default().fg(super::DIM),
     );
 }
 
-fn rate_line(label: &str, rate: f64, color: ratatui::style::Color) -> Line<'static> {
+fn rates_line(rx: f64, tx: f64, palette: &Palette) -> Line<'static> {
     Line::from(vec![
-        dim_text(format!("{label}  ")),
-        ratatui::text::Span::styled(format_rate(rate), Style::default().fg(color)),
+        dim_text("↓ rx  "),
+        Span::styled(
+            format_rate(rx),
+            Style::default().fg(rate_color(rx, palette.rx)),
+        ),
+        dim_text("   "),
+        dim_text("↑ tx  "),
+        Span::styled(
+            format_rate(tx),
+            Style::default().fg(rate_color(tx, palette.tx)),
+        ),
     ])
+}
+
+fn rate_color(rate: f64, color: Color) -> Color {
+    if rate > 0.0 { color } else { DIM }
 }

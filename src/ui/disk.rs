@@ -1,9 +1,9 @@
 use super::{
-    DIM, RX, TX, accent, braille, dim_text, disk_usage_color, format_bytes, format_rate, panel,
-    render_empty, segmented_bar, threshold_color,
+    DIM, accent, braille, dim_text, format_bytes, format_rate, panel, render_empty, segmented_bar,
 };
 use crate::app::App;
 use crate::history::RingBuffer;
+use crate::theme::Palette;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
@@ -11,7 +11,7 @@ use ratatui::widgets::Paragraph;
 
 pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let accent = accent(app);
-    let partition_height = (app.disk.partitions.len() as u16 + 2)
+    let partition_height = (app.disk.partitions.len() as u16 * 2 + 1)
         .max(3)
         .min((area.height / 2).max(3));
     let zram_height = if app.disk.zram.is_empty() {
@@ -44,16 +44,25 @@ fn draw_partitions(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Co
         return;
     }
 
-    let mut constraints: Vec<Constraint> = app
+    let longest = app
         .disk
         .partitions
         .iter()
-        .map(|_| Constraint::Length(1))
-        .collect();
-    constraints.push(Constraint::Min(0));
+        .map(|partition| partition.mount.chars().count() as u16)
+        .max()
+        .unwrap_or(0);
+    let label_width = longest.min(inner.width.saturating_sub(46)).max(8);
+
+    let mut constraints = Vec::new();
+    for (index, _) in app.disk.partitions.iter().enumerate() {
+        if index > 0 {
+            constraints.push(Constraint::Fill(1));
+        }
+        constraints.push(Constraint::Length(1));
+    }
     let sections = Layout::vertical(constraints).split(inner);
 
-    for (partition, section) in app.disk.partitions.iter().zip(sections.iter()) {
+    for (partition, section) in app.disk.partitions.iter().zip(sections.iter().step_by(2)) {
         if section.height == 0 {
             continue;
         }
@@ -64,7 +73,8 @@ fn draw_partitions(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Co
             &partition.mount,
             used_bytes,
             partition.total_bytes,
-            disk_usage_color,
+            label_width,
+            |value| app.palette.disk_usage(value),
         );
     }
 }
@@ -100,7 +110,8 @@ fn draw_zram(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
             &sample.name,
             sample.used_bytes,
             sample.total_bytes,
-            threshold_color,
+            18,
+            |value| app.palette.threshold(value),
         );
     }
 }
@@ -111,7 +122,8 @@ fn draw_usage_row(
     label: &str,
     used_bytes: u64,
     total_bytes: u64,
-    color: fn(f32) -> Color,
+    label_width: u16,
+    color: impl Fn(f32) -> Color,
 ) {
     let used_percent = if total_bytes > 0 {
         (used_bytes as f64 / total_bytes as f64 * 100.0) as f32
@@ -120,13 +132,16 @@ fn draw_usage_row(
     };
 
     let [label_area, gauge_area, size_area] = Layout::horizontal([
-        Constraint::Length(18),
+        Constraint::Length(label_width),
         Constraint::Min(0),
         Constraint::Length(22),
     ])
     .areas(area);
 
-    frame.render_widget(Paragraph::new(dim_text(truncate_mount(label))), label_area);
+    frame.render_widget(
+        Paragraph::new(dim_text(truncate_mount(label, label_width))),
+        label_area,
+    );
     frame.render_widget(
         Paragraph::new(segmented_bar(used_percent, gauge_area.width, color)),
         gauge_area,
@@ -173,7 +188,12 @@ fn draw_io_device(
     app: &App,
     accent: Color,
 ) {
-    let block = panel(sample.device.clone(), accent);
+    let title = if sample.model.is_empty() {
+        sample.device.clone()
+    } else {
+        format!("{} — {}", sample.device, sample.model)
+    };
+    let block = panel(title, accent);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.height == 0 {
@@ -188,12 +208,12 @@ fn draw_io_device(
     let rates = Line::from(vec![
         Span::styled(
             format!("↓ read  {}", format_rate(read)),
-            Style::default().fg(if read > 0.0 { RX } else { DIM }),
+            Style::default().fg(if read > 0.0 { app.palette.rx } else { DIM }),
         ),
         dim_text("   "),
         Span::styled(
             format!("↑ write {}", format_rate(write)),
-            Style::default().fg(if write > 0.0 { TX } else { DIM }),
+            Style::default().fg(if write > 0.0 { app.palette.tx } else { DIM }),
         ),
     ]);
     frame.render_widget(Paragraph::new(rates), rate_area);
@@ -203,6 +223,7 @@ fn draw_io_device(
         chart_area,
         app.disk_read_history.get(&sample.device),
         app.disk_write_history.get(&sample.device),
+        &app.palette,
     );
 }
 
@@ -211,6 +232,7 @@ fn draw_rw(
     area: Rect,
     read: Option<&RingBuffer>,
     write: Option<&RingBuffer>,
+    palette: &Palette,
 ) {
     let (Some(read), Some(write)) = (read, write) else {
         return;
@@ -220,17 +242,41 @@ fn draw_rw(
         area,
         read,
         write,
-        1.0 / 1024.0,
+        1.0,
         1,
-        Style::default().fg(RX),
-        Style::default().fg(TX),
+        Style::default().fg(palette.rx),
+        Style::default().fg(palette.tx),
         Style::default().fg(DIM),
     );
 }
 
-fn truncate_mount(mount: &str) -> &str {
-    mount
-        .char_indices()
-        .nth_back(17)
-        .map_or(mount, |(index, _)| &mount[index..])
+fn truncate_mount(mount: &str, width: u16) -> String {
+    let width = usize::from(width);
+    if mount.chars().count() <= width {
+        return mount.to_string();
+    }
+    if width <= 3 {
+        return mount.chars().take(width).collect();
+    }
+    let head: String = mount.chars().take(width - 3).collect();
+    format!("{head}...")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::truncate_mount;
+
+    #[test]
+    fn truncate_mount_keeps_head_and_ellipsis() {
+        assert_eq!(truncate_mount("/home", 18), "/home");
+        assert_eq!(
+            truncate_mount("/var/cache/pacman/pkg", 18),
+            "/var/cache/pacm..."
+        );
+        assert_eq!(
+            truncate_mount("/var/cache/pacman/pkg", 40),
+            "/var/cache/pacman/pkg"
+        );
+        assert_eq!(truncate_mount("/var/cache/pacman/pkg", 2), "/v");
+    }
 }

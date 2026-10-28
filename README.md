@@ -25,6 +25,7 @@ Configuration is optional. RRM reads it from `$XDG_CONFIG_HOME/rrm/config.toml`,
 | `accent_color` | `display` | string | `"#00BFFF"` | Accent color as a `#RRGGBB` hex value |
 | `top_n` | `processes` | integer | `15` | Number of processes shown in the Processes tab |
 | `sort_by` | `processes` | string | `"cpu"` | Process sort column: `"cpu"` or `"mem"` |
+| `accent`, `good`, `warn`, `crit`, `rx`, `tx`, `banner` | `colors` | string | palette defaults | Palette overrides as `#RRGGBB`; edited from the Theme tab |
 
 Example:
 
@@ -36,14 +37,25 @@ accent_color = "#00BFFF"
 [processes]
 top_n = 15
 sort_by = "cpu"
+
+[colors]
+accent = "#00BFFF"
+good = "#64D282"
+warn = "#F0B432"
+crit = "#DC4646"
+rx = "#50B4DC"
+tx = "#B45ADC"
+banner = "#B45ADC"
 ```
 
 ## Keybindings
 
 | Key | Action |
 |-----|--------|
-| ←/→ | Previous/Next tab |
-| 1-7 | Jump to tab |
+| ←/→ or Tab/Shift+Tab | Previous/Next tab |
+| 1-8 | Jump to tab |
+| ↑/↓ (Theme tab) | Select palette entry |
+| ←/→ (Theme tab) | Change the selected color (saved to config.toml) |
 | +/- | Increase/decrease refresh rate (100ms step) |
 | q / Ctrl+C | Quit |
 
@@ -53,7 +65,7 @@ sort_by = "cpu"
 - RAM and swap usage
 - Disk I/O rates and partition space
 - Network RX/TX rates per interface
-- GPU usage, VRAM, and temperature (Intel/AMD via sysfs)
+- GPU usage, VRAM/shared memory, clock, driver and temperature (sysfs; Intel usage is estimated from RC6 residency) (Intel/AMD via sysfs)
 - Battery charge, status, and health
 - Top processes by CPU or memory
 
