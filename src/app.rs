@@ -171,7 +171,7 @@ impl App {
             self.gpu_usage = gpu.usage_percent().ok();
             self.gpu_usage_history.push(self.gpu_usage.unwrap_or(0.0));
             self.gpu_temp_history
-                .push(gpu.temperature_celsius().map_or(0.0, |value| value));
+                .push(gpu.temperature_celsius().unwrap_or(0.0));
         }
         if let Some(battery) = self.battery.batteries.first() {
             // Stored in mW so sub-watt values survive the braille chart's integer scale.
