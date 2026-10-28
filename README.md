@@ -25,7 +25,7 @@ Configuration is optional. RRM reads it from `$XDG_CONFIG_HOME/rrm/config.toml`,
 | `accent_color` | `display` | string | `"#00BFFF"` | Accent color as a `#RRGGBB` hex value |
 | `top_n` | `processes` | integer | `15` | Number of processes shown in the Processes tab |
 | `sort_by` | `processes` | string | `"cpu"` | Process sort column: `"cpu"` or `"mem"` |
-| `accent`, `good`, `warn`, `crit`, `rx`, `tx`, `banner`, `background` | `colors` | string | palette defaults | Palette overrides as `#RRGGBB` (or `transparent`); edited from the Theme tab |
+| `accent`, `good`, `warn`, `crit`, `rx`, `tx`, `banner`, `background`, `logo`, `key`, `value` | `colors` | string | palette defaults | Palette overrides as `#RRGGBB` (or `transparent`); edited from the Theme tab |
 
 Example:
 

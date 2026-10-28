@@ -2,7 +2,7 @@ use crate::config::Config;
 use ratatui::style::Color;
 
 /// Editable palette slots, in the order shown in the Theme tab.
-pub const SLOT_NAMES: [&str; 8] = [
+pub const SLOT_NAMES: [&str; 11] = [
     "accent",
     "good",
     "warn",
@@ -11,10 +11,13 @@ pub const SLOT_NAMES: [&str; 8] = [
     "tx",
     "banner",
     "background",
+    "logo",
+    "key",
+    "value",
 ];
 
 /// Slots in the order the Theme tab shows them: background first.
-pub const SLOT_ORDER: [usize; 8] = [7, 0, 1, 2, 3, 4, 5, 6];
+pub const SLOT_ORDER: [usize; 11] = [7, 0, 1, 2, 3, 4, 5, 6, 8, 9, 10];
 
 /// Index of the `background` slot in `SLOT_NAMES`.
 pub const BACKGROUND_INDEX: usize = 7;
@@ -30,6 +33,9 @@ pub struct Palette {
     pub tx: Color,
     pub banner: Color,
     pub background: Color,
+    pub logo: Color,
+    pub key: Color,
+    pub value: Color,
 }
 
 impl Default for Palette {
@@ -43,6 +49,9 @@ impl Default for Palette {
             tx: Color::Rgb(180, 90, 220),
             banner: Color::Rgb(180, 90, 220),
             background: NEAR_BLACK,
+            logo: Color::Rgb(0, 191, 255),
+            key: Color::Rgb(0, 191, 255),
+            value: Color::Rgb(100, 210, 130),
         }
     }
 }
@@ -52,13 +61,32 @@ impl Palette {
     pub fn from_config(config: &Config) -> Self {
         let defaults = Self::default();
         let (r, g, b) = config.accent_color_rgb();
+        let accent = config
+            .colors
+            .accent
+            .as_deref()
+            .and_then(parse_hex)
+            .unwrap_or(Color::Rgb(r, g, b));
         Self {
-            accent: config
+            accent,
+            logo: config
                 .colors
-                .accent
+                .logo
                 .as_deref()
                 .and_then(parse_hex)
-                .unwrap_or(Color::Rgb(r, g, b)),
+                .unwrap_or(accent),
+            key: config
+                .colors
+                .key
+                .as_deref()
+                .and_then(parse_hex)
+                .unwrap_or(accent),
+            value: config
+                .colors
+                .value
+                .as_deref()
+                .and_then(parse_hex)
+                .unwrap_or(defaults.good),
             good: config
                 .colors
                 .good
@@ -121,6 +149,9 @@ impl Palette {
             4 => self.rx,
             5 => self.tx,
             6 => self.banner,
+            8 => self.logo,
+            9 => self.key,
+            10 => self.value,
             _ => self.background,
         }
     }
@@ -135,6 +166,9 @@ impl Palette {
             5 => self.tx = color,
             6 => self.banner = color,
             7 => self.background = color,
+            8 => self.logo = color,
+            9 => self.key = color,
+            10 => self.value = color,
             _ => {}
         }
     }
@@ -172,6 +206,9 @@ impl Palette {
         config.colors.tx = Some(to_hex(self.tx));
         config.colors.banner = Some(to_hex(self.banner));
         config.colors.background = Some(to_hex(self.background));
+        config.colors.logo = Some(to_hex(self.logo));
+        config.colors.key = Some(to_hex(self.key));
+        config.colors.value = Some(to_hex(self.value));
     }
 }
 
@@ -282,6 +319,24 @@ mod tests {
         assert_eq!(cycle_background(PRESETS[0], -1), TRANSPARENT);
         assert_eq!(cycle_background(TRANSPARENT, -1), last);
         assert_eq!(cycle_background(PRESETS[0], 1), PRESETS[1]);
+    }
+
+    #[test]
+    fn system_slots_fall_back_to_accent_and_good() {
+        let mut config = crate::config::Config::default();
+        config.colors.accent = Some("#112233".to_string());
+        let palette = Palette::from_config(&config);
+        assert_eq!(palette.logo, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(palette.key, Color::Rgb(0x11, 0x22, 0x33));
+        assert_eq!(palette.value, Palette::default().good);
+
+        config.colors.logo = Some("#AABBCC".to_string());
+        config.colors.key = Some("#010203".to_string());
+        config.colors.value = Some("#040506".to_string());
+        let palette = Palette::from_config(&config);
+        assert_eq!(palette.logo, Color::Rgb(0xAA, 0xBB, 0xCC));
+        assert_eq!(palette.key, Color::Rgb(1, 2, 3));
+        assert_eq!(palette.value, Color::Rgb(4, 5, 6));
     }
 
     #[test]

@@ -28,8 +28,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     ])
     .areas(inner);
 
-    let logo =
-        Paragraph::new(logo_for(&app.system.latest.distro_id)).style(Style::default().fg(accent));
+    let logo = Paragraph::new(logo_for(&app.system.latest.distro_id))
+        .style(Style::default().fg(app.palette.logo));
     // Two blank rows above the logo; the info column stays at the top.
     let logo_area = Rect {
         y: logo_area.y.saturating_add(2),
@@ -49,9 +49,8 @@ fn logo_for(distro_id: &str) -> &'static str {
 
 fn info_lines(app: &App) -> Vec<Line<'static>> {
     let sample = &app.system.latest;
-    let key = Style::default().fg(app.palette.accent);
-    let value = Style::default().fg(app.palette.good);
-    let plain = Style::default();
+    let key = Style::default().fg(app.palette.key);
+    let value = Style::default().fg(app.palette.value);
     let row = |label: &str, text: String, value_style: Style| {
         Line::from(vec![
             Span::styled(format!("{label:<12}"), key),
@@ -63,7 +62,7 @@ fn info_lines(app: &App) -> Vec<Line<'static>> {
         Line::from(Span::styled(
             format!("{}@{}", sample.user, sample.host),
             Style::default()
-                .fg(app.palette.accent)
+                .fg(app.palette.key)
                 .add_modifier(Modifier::BOLD),
         )),
         Line::default(),
@@ -85,15 +84,15 @@ fn info_lines(app: &App) -> Vec<Line<'static>> {
                 .map_or_else(|| "n/a".to_string(), |gpu| gpu.name().to_string()),
             value,
         ),
-        row("memory", memory_text(app), plain),
-        row("disk", disk_text(app), plain),
+        row("memory", memory_text(app), value),
+        row("disk", disk_text(app), value),
         row(
             "load",
             format!(
                 "{:.2} {:.2} {:.2}",
                 sample.load[0], sample.load[1], sample.load[2]
             ),
-            plain,
+            value,
         ),
     ]
 }
