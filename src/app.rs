@@ -6,6 +6,7 @@ use crate::collectors::gpu::{GpuProvider, detect_gpu};
 use crate::collectors::memory::MemoryCollector;
 use crate::collectors::network::NetworkCollector;
 use crate::collectors::processes::{ProcessCollector, SortBy};
+use crate::collectors::system::SystemCollector;
 use crate::config::Config;
 use crate::history::RingBuffer;
 use crate::theme::Palette;
@@ -15,6 +16,7 @@ use std::collections::HashMap;
 /// Tabs shown in the tab bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
+    System,
     Cpu,
     Memory,
     Disk,
@@ -28,6 +30,7 @@ pub enum Tab {
 /// Application state shared by the event loop and the UI.
 pub struct App {
     pub tab: Tab,
+    pub system: SystemCollector,
     pub cpu: CpuCollector,
     pub memory: MemoryCollector,
     pub disk: DiskCollector,
@@ -88,7 +91,8 @@ impl App {
         let num_cores = cpu.latest.per_core_percent.len();
 
         Ok(Self {
-            tab: Tab::Cpu,
+            tab: Tab::System,
+            system: SystemCollector::new()?,
             cpu,
             memory,
             disk,
@@ -119,6 +123,7 @@ impl App {
 
     /// Refresh every collector and append new values to the history buffers.
     pub fn on_tick(&mut self) {
+        let _ = self.system.update();
         let _ = self.cpu.update();
         let _ = self.memory.update();
         let _ = self.disk.update();
@@ -187,6 +192,7 @@ impl App {
     /// Advance to the next tab, wrapping around at the end.
     pub fn next_tab(&mut self) {
         self.tab = match self.tab {
+            Tab::System => Tab::Cpu,
             Tab::Cpu => Tab::Memory,
             Tab::Memory => Tab::Disk,
             Tab::Disk => Tab::Network,
@@ -194,7 +200,7 @@ impl App {
             Tab::Gpu => Tab::Battery,
             Tab::Battery => Tab::Processes,
             Tab::Processes => Tab::Theme,
-            Tab::Theme => Tab::Cpu,
+            Tab::Theme => Tab::System,
         };
         self.clear_theme_selection();
     }
@@ -202,7 +208,8 @@ impl App {
     /// Move to the previous tab, wrapping around at the start.
     pub fn prev_tab(&mut self) {
         self.tab = match self.tab {
-            Tab::Cpu => Tab::Theme,
+            Tab::System => Tab::Theme,
+            Tab::Cpu => Tab::System,
             Tab::Memory => Tab::Cpu,
             Tab::Disk => Tab::Memory,
             Tab::Network => Tab::Disk,
@@ -229,6 +236,15 @@ impl App {
 
     /// Move the Theme-tab selection, wrapping around; the first press selects
     /// the first field (down) or the last one (up).
+    /// Esc: leave hex editing, otherwise hand input back to the tab bar.
+    pub fn escape(&mut self) {
+        if self.theme_edit.is_some() {
+            self.cancel_theme_edit();
+        } else if self.tab == Tab::Theme {
+            self.theme_row = None;
+        }
+    }
+
     pub fn select_theme_row(&mut self, delta: i32) {
         let order = crate::theme::SLOT_ORDER;
         let count = order.len() as i32;
@@ -244,6 +260,18 @@ impl App {
     }
 
     /// Cycle the selected Theme-tab color and persist the palette.
+    /// Left/right in the Theme tab: cycle the selected color, otherwise
+    /// behave like the other tabs and switch tab.
+    pub fn arrow(&mut self, delta: i32) {
+        if self.tab == Tab::Theme && self.theme_row.is_some() {
+            self.cycle_theme_color(delta);
+        } else if delta > 0 {
+            self.next_tab();
+        } else {
+            self.prev_tab();
+        }
+    }
+
     pub fn cycle_theme_color(&mut self, delta: i32) {
         let Some(row) = self.theme_row else {
             return;
@@ -322,16 +350,48 @@ mod tab_tests {
     use crate::config::Config;
 
     #[test]
+    fn escape_cancels_editing_first() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        app.open_theme();
+        app.theme_row = Some(0);
+        app.start_theme_edit();
+        app.escape();
+        assert!(app.theme_edit.is_none());
+        assert_eq!(app.theme_row, Some(0));
+    }
+
+    #[test]
+    fn escape_hands_input_back_to_the_tab_bar() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        app.open_theme();
+        app.theme_row = Some(2);
+        app.escape();
+        assert_eq!(app.theme_row, None);
+        assert_eq!(app.tab, Tab::Theme);
+    }
+
+    #[test]
     fn arrows_include_the_theme_tab() {
         let mut app = App::new(&Config::default(), 80).unwrap();
         app.tab = Tab::Processes;
         app.next_tab();
         assert_eq!(app.tab, Tab::Theme);
         app.next_tab();
-        assert_eq!(app.tab, Tab::Cpu);
+        assert_eq!(app.tab, Tab::System);
         app.prev_tab();
         assert_eq!(app.tab, Tab::Theme);
         app.prev_tab();
+        assert_eq!(app.tab, Tab::Processes);
+    }
+
+    #[test]
+    fn arrows_leave_theme_when_nothing_is_selected() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        app.open_theme();
+        app.arrow(1);
+        assert_eq!(app.tab, Tab::System);
+        app.open_theme();
+        app.arrow(-1);
         assert_eq!(app.tab, Tab::Processes);
     }
 
@@ -367,7 +427,7 @@ mod tab_tests {
         assert_eq!(app.theme_row, None);
 
         app.theme_row = Some(3);
-        app.tab = Tab::Cpu;
+        app.tab = Tab::System;
         app.prev_tab();
         assert_eq!(app.tab, Tab::Theme);
         assert_eq!(app.theme_row, None);

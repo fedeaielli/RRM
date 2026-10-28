@@ -44,8 +44,10 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
 
     let hint = if app.theme_edit.is_some() {
         "#RRGGBB   Enter save   Esc cancel"
-    } else {
+    } else if app.theme_row.is_some() {
         "↑/↓ select   ←/→ change color   Enter hex"
+    } else {
+        "↑/↓ select   ←/→ change tab"
     };
     let mut footer = vec![Line::from(dim_text(hint))];
     if let Some(error) = &app.theme_error {

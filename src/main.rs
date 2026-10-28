@@ -57,30 +57,20 @@ async fn main() -> anyhow::Result<()> {
                     (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
                     (KeyCode::Tab, _) => app.next_tab(),
                     (KeyCode::BackTab, _) => app.prev_tab(),
-                    (KeyCode::Right, _) => {
-                        if app.tab == Tab::Theme {
-                            app.cycle_theme_color(1);
-                        } else {
-                            app.next_tab();
-                        }
-                    }
-                    (KeyCode::Left, _) => {
-                        if app.tab == Tab::Theme {
-                            app.cycle_theme_color(-1);
-                        } else {
-                            app.prev_tab();
-                        }
-                    }
+                    (KeyCode::Esc, _) => app.escape(),
+                    (KeyCode::Right, _) => app.arrow(1),
+                    (KeyCode::Left, _) => app.arrow(-1),
                     (KeyCode::Enter, _) if app.tab == Tab::Theme => app.start_theme_edit(),
                     (KeyCode::Up, _) if app.tab == Tab::Theme => app.select_theme_row(-1),
                     (KeyCode::Down, _) if app.tab == Tab::Theme => app.select_theme_row(1),
-                    (KeyCode::Char('1'), _) => app.tab = Tab::Cpu,
-                    (KeyCode::Char('2'), _) => app.tab = Tab::Memory,
-                    (KeyCode::Char('3'), _) => app.tab = Tab::Disk,
-                    (KeyCode::Char('4'), _) => app.tab = Tab::Network,
-                    (KeyCode::Char('5'), _) => app.tab = Tab::Gpu,
-                    (KeyCode::Char('6'), _) => app.tab = Tab::Battery,
-                    (KeyCode::Char('7'), _) => app.tab = Tab::Processes,
+                    (KeyCode::Char('1'), _) => app.tab = Tab::System,
+                    (KeyCode::Char('2'), _) => app.tab = Tab::Cpu,
+                    (KeyCode::Char('3'), _) => app.tab = Tab::Memory,
+                    (KeyCode::Char('4'), _) => app.tab = Tab::Disk,
+                    (KeyCode::Char('5'), _) => app.tab = Tab::Network,
+                    (KeyCode::Char('6'), _) => app.tab = Tab::Gpu,
+                    (KeyCode::Char('7'), _) => app.tab = Tab::Battery,
+                    (KeyCode::Char('8'), _) => app.tab = Tab::Processes,
                     (KeyCode::PageDown, _) => app.open_theme(),
                     (KeyCode::Char('s'), _) => app.processes.toggle_sort(),
                     (KeyCode::Char('+'), _) => {

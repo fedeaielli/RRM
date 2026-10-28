@@ -5,6 +5,7 @@ pub mod gpu;
 pub mod memory;
 pub mod network;
 pub mod processes;
+pub mod system;
 
 /// A source of live system metrics.
 pub trait Collector: Send + Sync {
