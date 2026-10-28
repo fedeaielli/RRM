@@ -2,6 +2,8 @@
 
 A fast, terminal-based system resource monitor for Linux, powered by `/proc` and `/sys`.
 
+![screenshot](assets/screenshot.png)
+
 
 ## Install
 
