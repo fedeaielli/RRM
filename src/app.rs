@@ -2,6 +2,7 @@ use crate::collectors::Collector;
 use crate::collectors::battery::BatteryCollector;
 use crate::collectors::cpu::CpuCollector;
 use crate::collectors::disk::DiskCollector;
+use crate::collectors::fans::FansCollector;
 use crate::collectors::gpu::{GpuProvider, detect_gpu};
 use crate::collectors::memory::MemoryCollector;
 use crate::collectors::network::NetworkCollector;
@@ -24,6 +25,7 @@ pub enum Tab {
     Gpu,
     Battery,
     Processes,
+    Fans,
     Theme,
 }
 
@@ -37,6 +39,7 @@ pub struct App {
     pub network: NetworkCollector,
     pub battery: BatteryCollector,
     pub processes: ProcessCollector,
+    pub fans: FansCollector,
     pub gpu: Option<Box<dyn GpuProvider>>,
 
     pub cpu_history: RingBuffer,
@@ -51,6 +54,7 @@ pub struct App {
     pub net_tx_history: HashMap<String, RingBuffer>,
     pub disk_read_history: HashMap<String, RingBuffer>,
     pub disk_write_history: HashMap<String, RingBuffer>,
+    pub fan_histories: HashMap<String, RingBuffer>,
 
     pub tick_rate_ms: u64,
     pub palette: Palette,
@@ -99,6 +103,7 @@ impl App {
             network,
             battery,
             processes,
+            fans: FansCollector::new()?,
             gpu: detect_gpu(),
             cpu_history: RingBuffer::new(capacity),
             cpu_core_histories: (0..num_cores).map(|_| RingBuffer::new(capacity)).collect(),
@@ -112,6 +117,7 @@ impl App {
             net_tx_history: HashMap::new(),
             disk_read_history: HashMap::new(),
             disk_write_history: HashMap::new(),
+            fan_histories: HashMap::new(),
             tick_rate_ms: config.display.refresh_ms,
             palette: Palette::from_config(config),
             config: config.clone(),
@@ -130,6 +136,7 @@ impl App {
         let _ = self.network.update();
         let _ = self.battery.update();
         let _ = self.processes.update();
+        let _ = self.fans.update();
 
         self.cpu_history.push(self.cpu.latest.total_percent);
 
@@ -169,6 +176,16 @@ impl App {
                 .push((sample.write_bytes_per_sec / 1024.0) as f32);
         }
 
+        let live_fans: Vec<&str> = self.fans.fans.iter().map(|f| f.name.as_str()).collect();
+        self.fan_histories
+            .retain(|name, _| live_fans.contains(&name.as_str()));
+        for fan in &self.fans.fans {
+            self.fan_histories
+                .entry(fan.name.clone())
+                .or_insert_with(|| RingBuffer::new(capacity))
+                .push(fan.rpm as f32);
+        }
+
         for (index, history) in self.cpu_core_histories.iter_mut().enumerate() {
             if let Some(&percent) = self.cpu.latest.per_core_percent.get(index) {
                 history.push(percent);
@@ -199,7 +216,8 @@ impl App {
             Tab::Network => Tab::Gpu,
             Tab::Gpu => Tab::Battery,
             Tab::Battery => Tab::Processes,
-            Tab::Processes => Tab::Theme,
+            Tab::Processes => Tab::Fans,
+            Tab::Fans => Tab::Theme,
             Tab::Theme => Tab::System,
         };
         self.clear_theme_selection();
@@ -215,8 +233,9 @@ impl App {
             Tab::Network => Tab::Disk,
             Tab::Gpu => Tab::Network,
             Tab::Battery => Tab::Gpu,
+            Tab::Fans => Tab::Processes,
             Tab::Processes => Tab::Battery,
-            Tab::Theme => Tab::Processes,
+            Tab::Theme => Tab::Fans,
         };
         self.clear_theme_selection();
     }
@@ -375,11 +394,15 @@ mod tab_tests {
         let mut app = App::new(&Config::default(), 80).unwrap();
         app.tab = Tab::Processes;
         app.next_tab();
+        assert_eq!(app.tab, Tab::Fans);
+        app.next_tab();
         assert_eq!(app.tab, Tab::Theme);
         app.next_tab();
         assert_eq!(app.tab, Tab::System);
         app.prev_tab();
         assert_eq!(app.tab, Tab::Theme);
+        app.prev_tab();
+        assert_eq!(app.tab, Tab::Fans);
         app.prev_tab();
         assert_eq!(app.tab, Tab::Processes);
     }
@@ -392,7 +415,7 @@ mod tab_tests {
         assert_eq!(app.tab, Tab::System);
         app.open_theme();
         app.arrow(-1);
-        assert_eq!(app.tab, Tab::Processes);
+        assert_eq!(app.tab, Tab::Fans);
     }
 
     #[test]
@@ -421,7 +444,7 @@ mod tab_tests {
     fn entering_theme_clears_the_selection() {
         let mut app = App::new(&Config::default(), 80).unwrap();
         app.theme_row = Some(2);
-        app.tab = Tab::Processes;
+        app.tab = Tab::Fans;
         app.next_tab();
         assert_eq!(app.tab, Tab::Theme);
         assert_eq!(app.theme_row, None);

@@ -53,7 +53,7 @@ banner = "#B45ADC"
 | Key | Action |
 |-----|--------|
 | ←/→ or Tab/Shift+Tab | Previous/Next tab |
-| 1-8 | Jump to tab |
+| 1-9 | Jump to tab |
 | PageDown | Open the theme tab (nothing selected) |
 | ↑/↓ (Theme tab) | Select palette entry |
 | ←/→ (Theme tab) | Change the selected color (saved to config.toml) |
@@ -71,6 +71,7 @@ banner = "#B45ADC"
 - GPU usage, VRAM/shared memory, clock, driver and temperature (sysfs; Intel usage is estimated from RC6 residency) (Intel/AMD via sysfs)
 - Battery charge, status, and health
 - Top processes by CPU or memory
+- Fan speeds per sensor, scaled to the sensor's maximum rpm when reported
 
 ## License
 
