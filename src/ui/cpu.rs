@@ -2,7 +2,7 @@ use super::{DIM, accent, braille, dim_text, panel, render_empty};
 use crate::app::App;
 use crate::history::RingBuffer;
 use crate::theme::Palette;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
@@ -85,22 +85,22 @@ fn draw_core_grid(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
 
-    let num_cols = (area.width / 26).max(1) as usize;
-    let cell_w = area.width / num_cols as u16;
+    let num_cols = (area.width / 26).max(1);
+    let widths = core_cell_widths(area.width, num_cols);
     let rows = app
         .cpu
         .latest
         .per_core_percent
         .len()
-        .div_ceil(num_cols)
+        .div_ceil(num_cols as usize)
         .max(1) as u16;
     // Braille yields four dot rows per cell, so taller cells keep the waveform smooth.
     let cell_h = (area.height / rows).clamp(4, 6);
     let bottom = area.y.saturating_add(area.height);
 
     for (index, &percent) in app.cpu.latest.per_core_percent.iter().enumerate() {
-        let col = (index % num_cols) as u16;
-        let row = (index / num_cols) as u16;
+        let col = index % num_cols as usize;
+        let row = (index / num_cols as usize) as u16;
         let y = area.y.saturating_add(row * cell_h);
         if y >= bottom {
             break;
@@ -111,9 +111,9 @@ fn draw_core_grid(frame: &mut ratatui::Frame, area: Rect, app: &App) {
             break;
         }
         let cell = Rect {
-            x: area.x.saturating_add(col * cell_w),
+            x: area.x.saturating_add(widths[..col].iter().sum::<u16>()),
             y,
-            width: cell_w,
+            width: widths[col],
             height,
         };
         draw_core_cell(
@@ -155,7 +155,10 @@ fn draw_core_cell(
             .right_aligned(),
         );
 
-    let inner = block.inner(area);
+    let inner = block.inner(area).inner(Margin {
+        horizontal: 1,
+        vertical: 0,
+    });
     frame.render_widget(block, area);
     if inner.height == 0 || inner.width == 0 {
         return;
@@ -172,4 +175,44 @@ fn draw_core_cell(
         MIN_AUTOSCALE,
         Style::default().fg(color),
     );
+}
+
+/// Split `width` into `columns` cells, giving the spare columns to the middle
+/// ones so the outer cells stay the same size.
+fn core_cell_widths(width: u16, columns: u16) -> Vec<u16> {
+    if columns == 0 {
+        return Vec::new();
+    }
+    let base = width / columns;
+    let extra = width % columns;
+    let center = (columns - 1) / 2;
+    let mut order: Vec<u16> = (0..columns).collect();
+    order.sort_by_key(|index| (index.abs_diff(center), *index));
+
+    let mut widths = vec![base; usize::from(columns)];
+    for index in order.into_iter().take(usize::from(extra)) {
+        widths[usize::from(index)] += 1;
+    }
+    widths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::core_cell_widths;
+
+    #[test]
+    fn cell_widths_fill_the_row() {
+        for (width, columns) in [(100, 3), (99, 3), (80, 4), (26, 1), (5, 2)] {
+            let widths = core_cell_widths(width, columns);
+            assert_eq!(widths.len(), usize::from(columns));
+            assert_eq!(widths.iter().sum::<u16>(), width);
+            let max = widths.iter().copied().max().unwrap_or(0);
+            let min = widths.iter().copied().min().unwrap_or(0);
+            assert!(max - min <= 1);
+            if columns % 2 == 1 {
+                assert_eq!(widths[0], widths[widths.len() - 1]);
+            }
+        }
+        assert!(core_cell_widths(10, 0).is_empty());
+    }
 }

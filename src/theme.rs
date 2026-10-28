@@ -2,7 +2,22 @@ use crate::config::Config;
 use ratatui::style::Color;
 
 /// Editable palette slots, in the order shown in the Theme tab.
-pub const SLOT_NAMES: [&str; 7] = ["accent", "good", "warn", "crit", "rx", "tx", "banner"];
+pub const SLOT_NAMES: [&str; 8] = [
+    "accent",
+    "good",
+    "warn",
+    "crit",
+    "rx",
+    "tx",
+    "banner",
+    "background",
+];
+
+/// Slots in the order the Theme tab shows them: background first.
+pub const SLOT_ORDER: [usize; 8] = [7, 0, 1, 2, 3, 4, 5, 6];
+
+/// Index of the `background` slot in `SLOT_NAMES`.
+pub const BACKGROUND_INDEX: usize = 7;
 
 /// Colors chosen in the Theme tab. `dim` and the gauge track stay fixed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,6 +29,7 @@ pub struct Palette {
     pub rx: Color,
     pub tx: Color,
     pub banner: Color,
+    pub background: Color,
 }
 
 impl Default for Palette {
@@ -26,6 +42,7 @@ impl Default for Palette {
             rx: Color::Rgb(80, 180, 220),
             tx: Color::Rgb(180, 90, 220),
             banner: Color::Rgb(180, 90, 220),
+            background: NEAR_BLACK,
         }
     }
 }
@@ -40,44 +57,58 @@ impl Palette {
                 .colors
                 .accent
                 .as_deref()
-                .and_then(from_hex)
+                .and_then(parse_hex)
                 .unwrap_or(Color::Rgb(r, g, b)),
             good: config
                 .colors
                 .good
                 .as_deref()
-                .and_then(from_hex)
+                .and_then(parse_hex)
                 .unwrap_or(defaults.good),
             warn: config
                 .colors
                 .warn
                 .as_deref()
-                .and_then(from_hex)
+                .and_then(parse_hex)
                 .unwrap_or(defaults.warn),
             crit: config
                 .colors
                 .crit
                 .as_deref()
-                .and_then(from_hex)
+                .and_then(parse_hex)
                 .unwrap_or(defaults.crit),
             rx: config
                 .colors
                 .rx
                 .as_deref()
-                .and_then(from_hex)
+                .and_then(parse_hex)
                 .unwrap_or(defaults.rx),
             tx: config
                 .colors
                 .tx
                 .as_deref()
-                .and_then(from_hex)
+                .and_then(parse_hex)
                 .unwrap_or(defaults.tx),
             banner: config
                 .colors
                 .banner
                 .as_deref()
-                .and_then(from_hex)
+                .and_then(parse_hex)
                 .unwrap_or(defaults.banner),
+            // Migrate the old pure-black default, transparent on kitty.
+            background: config
+                .colors
+                .background
+                .as_deref()
+                .and_then(parse_hex)
+                .map(|color| {
+                    if color == Color::Rgb(0, 0, 0) {
+                        NEAR_BLACK
+                    } else {
+                        color
+                    }
+                })
+                .unwrap_or(defaults.background),
         }
     }
 
@@ -89,7 +120,8 @@ impl Palette {
             3 => self.crit,
             4 => self.rx,
             5 => self.tx,
-            _ => self.banner,
+            6 => self.banner,
+            _ => self.background,
         }
     }
 
@@ -101,7 +133,9 @@ impl Palette {
             3 => self.crit = color,
             4 => self.rx = color,
             5 => self.tx = color,
-            _ => self.banner = color,
+            6 => self.banner = color,
+            7 => self.background = color,
+            _ => {}
         }
     }
 
@@ -137,11 +171,12 @@ impl Palette {
         config.colors.rx = Some(to_hex(self.rx));
         config.colors.tx = Some(to_hex(self.tx));
         config.colors.banner = Some(to_hex(self.banner));
+        config.colors.background = Some(to_hex(self.background));
     }
 }
 
 /// Colors offered when cycling a slot with left/right.
-pub const PRESETS: [Color; 12] = [
+pub const PRESETS: [Color; 13] = [
     Color::Rgb(0, 191, 255),
     Color::Rgb(100, 210, 130),
     Color::Rgb(240, 180, 50),
@@ -154,7 +189,15 @@ pub const PRESETS: [Color; 12] = [
     Color::Rgb(255, 140, 60),
     Color::Rgb(80, 220, 200),
     Color::Rgb(240, 240, 120),
+    NEAR_BLACK,
 ];
+
+/// Pure black matches kitty's default background, which `background_opacity`
+/// makes transparent; one step off keeps the panel opaque.
+pub const NEAR_BLACK: Color = Color::Rgb(10, 10, 10);
+
+/// Transparent background: nothing is painted, the terminal shows through.
+pub const TRANSPARENT: Color = Color::Reset;
 
 /// Next preset from `current`, wrapping around in both directions.
 pub fn cycle(current: Color, delta: i32) -> Color {
@@ -166,14 +209,37 @@ pub fn cycle(current: Color, delta: i32) -> Color {
     PRESETS[(index + delta).rem_euclid(len) as usize]
 }
 
+/// Background-only cycle: same presets, plus transparent past either end.
+pub fn cycle_background(current: Color, delta: i32) -> Color {
+    let last = PRESETS[PRESETS.len() - 1];
+    if current == TRANSPARENT {
+        return if delta > 0 {
+            PRESETS[0]
+        } else {
+            PRESETS[PRESETS.len() - 1]
+        };
+    }
+    if delta > 0 && current == last {
+        return TRANSPARENT;
+    }
+    if delta < 0 && current == PRESETS[0] {
+        return TRANSPARENT;
+    }
+    cycle(current, delta)
+}
+
 pub fn to_hex(color: Color) -> String {
     match color {
         Color::Rgb(r, g, b) => format!("#{r:02X}{g:02X}{b:02X}"),
+        TRANSPARENT => "transparent".to_string(),
         _ => "#FFFFFF".to_string(),
     }
 }
 
-fn from_hex(value: &str) -> Option<Color> {
+pub fn parse_hex(value: &str) -> Option<Color> {
+    if value.trim() == "transparent" {
+        return Some(TRANSPARENT);
+    }
     let hex = value.trim().strip_prefix('#').unwrap_or(value.trim());
     if hex.len() != 6 {
         return None;
@@ -186,7 +252,9 @@ fn from_hex(value: &str) -> Option<Color> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PRESETS, Palette, cycle, to_hex};
+    use super::{
+        NEAR_BLACK, PRESETS, Palette, TRANSPARENT, cycle, cycle_background, parse_hex, to_hex,
+    };
     use ratatui::style::Color;
 
     #[test]
@@ -197,11 +265,63 @@ mod tests {
     }
 
     #[test]
+    fn parse_hex_accepts_colors_and_transparent() {
+        assert_eq!(parse_hex("#00BFFF"), Some(Color::Rgb(0, 191, 255)));
+        assert_eq!(parse_hex("00bfff"), Some(Color::Rgb(0, 191, 255)));
+        assert_eq!(parse_hex("transparent"), Some(TRANSPARENT));
+        assert_eq!(parse_hex("#00BFF"), None);
+        assert_eq!(parse_hex("#GGGGGG"), None);
+        assert_eq!(parse_hex(""), None);
+    }
+
+    #[test]
+    fn background_cycle_reaches_transparent() {
+        let last = PRESETS[PRESETS.len() - 1];
+        assert_eq!(cycle_background(last, 1), TRANSPARENT);
+        assert_eq!(cycle_background(TRANSPARENT, 1), PRESETS[0]);
+        assert_eq!(cycle_background(PRESETS[0], -1), TRANSPARENT);
+        assert_eq!(cycle_background(TRANSPARENT, -1), last);
+        assert_eq!(cycle_background(PRESETS[0], 1), PRESETS[1]);
+    }
+
+    #[test]
+    fn transparent_roundtrips_through_config_text() {
+        assert_eq!(to_hex(TRANSPARENT), "transparent");
+        let mut config = crate::config::Config::default();
+        config.colors.background = Some("transparent".to_string());
+        assert_eq!(Palette::from_config(&config).background, TRANSPARENT);
+    }
+
+    #[test]
+    fn pure_black_migrates_to_near_black() {
+        let mut config = crate::config::Config::default();
+        config.colors.background = Some("#000000".to_string());
+        assert_eq!(Palette::from_config(&config).background, NEAR_BLACK);
+
+        config.colors.background = Some("#123456".to_string());
+        assert_eq!(
+            Palette::from_config(&config).background,
+            ratatui::style::Color::Rgb(0x12, 0x34, 0x56)
+        );
+    }
+
+    #[test]
     fn slots_roundtrip_through_hex() {
-        let mut palette = Palette::default();
         let color = Color::Rgb(12, 34, 56);
-        palette.set_slot(2, color);
-        assert_eq!(palette.slot(2), color);
+        for index in 0..super::SLOT_NAMES.len() {
+            let mut palette = Palette::default();
+            palette.set_slot(index, color);
+            assert_eq!(palette.slot(index), color, "slot {index} was not set");
+            for other in 0..super::SLOT_NAMES.len() {
+                if other != index {
+                    assert_eq!(
+                        palette.slot(other),
+                        Palette::default().slot(other),
+                        "slot {index} overwrote slot {other}"
+                    );
+                }
+            }
+        }
         assert_eq!(to_hex(color), "#0C2238");
     }
 }
