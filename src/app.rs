@@ -40,6 +40,7 @@ pub struct App {
     pub mem_history: RingBuffer,
     pub swap_history: RingBuffer,
     pub battery_power_history: RingBuffer,
+    pub gpu_usage: Option<f32>,
     pub gpu_usage_history: RingBuffer,
     pub gpu_temp_history: RingBuffer,
     pub net_rx_history: HashMap<String, RingBuffer>,
@@ -97,6 +98,7 @@ impl App {
             mem_history: RingBuffer::new(capacity),
             swap_history: RingBuffer::new(capacity),
             battery_power_history: RingBuffer::new(capacity),
+            gpu_usage: None,
             gpu_usage_history: RingBuffer::new(capacity),
             gpu_temp_history: RingBuffer::new(capacity),
             net_rx_history: HashMap::new(),
@@ -164,8 +166,10 @@ impl App {
             }
         }
         if let Some(gpu) = self.gpu.as_ref() {
-            self.gpu_usage_history
-                .push(gpu.usage_percent().map_or(0.0, |value| value));
+            // Sampled once per tick: the Intel RC6 estimate is stateful, so the
+            // UI must not call it again while drawing.
+            self.gpu_usage = gpu.usage_percent().ok();
+            self.gpu_usage_history.push(self.gpu_usage.unwrap_or(0.0));
             self.gpu_temp_history
                 .push(gpu.temperature_celsius().map_or(0.0, |value| value));
         }

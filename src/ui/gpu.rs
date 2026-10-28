@@ -14,7 +14,7 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     };
 
-    let usage = gpu.usage_percent().ok();
+    let usage = app.gpu_usage;
     let vram_used = gpu.vram_used_mb().ok();
     let vram_total = gpu.vram_total_mb().ok();
     let temperature = gpu.temperature_celsius().ok();
@@ -184,4 +184,33 @@ fn draw_chart(
         1000,
         Style::default().fg(palette.threshold(value)),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::App;
+    use crate::config::Config;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn usage_title_uses_ticked_sample() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        if app.gpu.is_none() {
+            return;
+        }
+        app.gpu_usage = Some(42.0);
+        for _ in 0..160 {
+            app.gpu_usage_history.push(42.0);
+        }
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| super::draw(f, f.area(), &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..24)
+            .flat_map(|y| (0..80).map(move |x| (x, y)))
+            .map(|(x, y)| buffer[(x, y)].symbol().to_string())
+            .collect();
+        assert!(text.contains("usage  42.0%"));
+    }
 }

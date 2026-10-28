@@ -106,18 +106,29 @@ fn rate_bytes_per_sec(delta_bytes: u64, elapsed_secs: f64) -> f64 {
     delta_bytes as f64 / elapsed_secs
 }
 
-/// Loopback and typical virtual/bridge interfaces.
-const VIRTUAL_PREFIXES: [&str; 8] = ["lo", "virbr", "docker", "veth", "br-", "vnet", "tun", "tap"];
+/// VPN interfaces get their own block, so they are kept despite being virtual.
+pub fn is_vpn(interface: &str) -> bool {
+    interface.starts_with("tailscale")
+}
 
+/// Loopback and virtual interfaces (bridges, containers): only physical devices
+/// have a `device` symlink under `/sys/class/net`.
 fn is_virtual(interface: &str) -> bool {
-    VIRTUAL_PREFIXES
-        .iter()
-        .any(|prefix| interface.starts_with(prefix))
+    !is_vpn(interface)
+        && (interface == "lo"
+            || !std::path::Path::new("/sys/class/net")
+                .join(interface)
+                .join("device")
+                .exists())
 }
 
 /// Parse `/proc/net/dev`, skipping the header lines and virtual interfaces.
 fn parse_net_dev() -> anyhow::Result<Vec<NetStat>> {
     let contents = std::fs::read_to_string("/proc/net/dev")?;
+    Ok(parse_net_dev_str(&contents, is_virtual))
+}
+
+fn parse_net_dev_str(contents: &str, skip: impl Fn(&str) -> bool) -> Vec<NetStat> {
     let mut stats = Vec::new();
 
     for line in contents.lines() {
@@ -126,7 +137,7 @@ fn parse_net_dev() -> anyhow::Result<Vec<NetStat>> {
             continue;
         };
         let interface = name.trim();
-        if interface.is_empty() || is_virtual(interface) {
+        if interface.is_empty() || skip(interface) {
             continue;
         }
 
@@ -150,5 +161,28 @@ fn parse_net_dev() -> anyhow::Result<Vec<NetStat>> {
         });
     }
 
-    Ok(stats)
+    stats
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_vpn, parse_net_dev_str};
+
+    const SAMPLE: &str = "Inter-|   Receive                                                |  Transmit\n face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n    lo:     100       2    0    0    0     0          0         0      100       2    0    0    0     0       0          0\n  eth0:  4096      10    0    0    0     0          0         0     2048       5    0    0    0     0       0          0\n";
+
+    #[test]
+    fn tailscale_is_a_vpn_interface() {
+        assert!(is_vpn("tailscale0"));
+        assert!(!is_vpn("wlan0"));
+        assert!(!is_vpn("lo"));
+    }
+
+    #[test]
+    fn parse_reads_rx_and_tx_bytes() {
+        let stats = parse_net_dev_str(SAMPLE, |name| name == "lo");
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].interface, "eth0");
+        assert_eq!(stats[0].rx_bytes, 4096);
+        assert_eq!(stats[0].tx_bytes, 2048);
+    }
 }
