@@ -3,7 +3,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph, Tabs};
+use ratatui::widgets::{Block, BorderType, Paragraph};
 
 pub mod battery;
 pub mod braille;
@@ -82,6 +82,39 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Spread the tab titles evenly across `width`, with the dividers centred in
+/// the gaps. The last title ends at the right edge.
+fn tab_line(titles: &[&str], selected: usize, accent: Color, width: usize) -> Vec<Span<'static>> {
+    let dividers = titles.len().saturating_sub(1);
+    let text_width: usize = titles.iter().map(|title| title.chars().count()).sum();
+    // One space of margin at each end; the rest is split into even gaps so the
+    // spaces around every divider are symmetric.
+    let spare = width.saturating_sub(text_width + dividers + 2);
+    let pairs = spare / 2;
+    let (base, extra) = pairs
+        .checked_div(dividers)
+        .map_or((0, 0), |base| (base, pairs % dividers));
+    let mut spans = vec![Span::raw(" ")];
+    for (index, title) in titles.iter().enumerate() {
+        if index > 0 {
+            let half = base + usize::from(index - 1 < extra);
+            spans.push(Span::raw(" ".repeat(half)));
+            spans.push(dim_text("│"));
+            spans.push(Span::raw(" ".repeat(half)));
+        }
+        let style = if index == selected {
+            Style::default()
+                .fg(accent)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+        } else {
+            Style::default().fg(DIM)
+        };
+        spans.push(Span::styled((*title).to_string(), style));
+    }
+    spans.push(Span::raw(" ".repeat(1 + spare % 2)));
+    spans
+}
+
 /// A bold, accent-colored line for use as a block title.
 pub fn styled_title(text: impl Into<String>, accent: Color) -> Line<'static> {
     Line::from(Span::styled(
@@ -124,8 +157,14 @@ pub fn render_empty(frame: &mut Frame, area: Rect, title: &str, message: &str, a
 
 /// Render the tab bar and the active tab's content.
 pub fn draw(frame: &mut Frame, app: &App) {
+    let area = frame.area();
+    frame.render_widget(
+        Block::default().style(Style::default().bg(app.palette.background)),
+        area,
+    );
+
     let [tab_area, content_area] =
-        Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(frame.area());
+        Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
 
     let titles = [
         "cpu",
@@ -152,18 +191,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let tab_block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(DIM));
-    let tabs = Tabs::new(titles)
-        .block(tab_block)
-        .select(selected)
-        .style(Style::default().fg(DIM))
-        .highlight_style(
-            Style::default()
-                .fg(accent)
-                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-        )
-        .divider(Span::styled(" │ ", Style::default().fg(DIM)));
+    let tab_inner = tab_block.inner(tab_area);
+    frame.render_widget(tab_block, tab_area);
 
-    frame.render_widget(tabs, tab_area);
+    let spans = tab_line(&titles, selected, accent, tab_inner.width as usize);
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(Style::default().bg(app.palette.background)),
+        tab_inner,
+    );
 
     match app.tab {
         Tab::Cpu => cpu::draw(frame, content_area, app),
@@ -180,8 +215,71 @@ pub fn draw(frame: &mut Frame, app: &App) {
 #[cfg(test)]
 mod tests {
     use super::{IDLE, segmented_bar};
+    use crate::app::App;
+    use crate::config::Config;
     use crate::theme::Palette;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
     use ratatui::style::Color;
+
+    #[test]
+    fn background_covers_the_whole_terminal() {
+        let app = App::new(&Config::default(), 80).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| super::draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].bg, app.palette.background);
+        assert_eq!(buffer[(79, 23)].bg, app.palette.background);
+        assert_eq!(buffer[(2, 10)].bg, app.palette.background);
+        // The tab bar must be painted too, not left transparent.
+        assert_eq!(buffer[(3, 2)].bg, app.palette.background);
+
+        let mut transparent = App::new(&Config::default(), 80).unwrap();
+        transparent.palette.background = Color::Reset;
+        terminal.draw(|f| super::draw(f, &transparent)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(2, 10)].bg, Color::Reset);
+    }
+
+    #[test]
+    fn tab_bar_is_spread() {
+        for width in [80u16, 100] {
+            let app = App::new(&Config::default(), width).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
+            terminal.draw(|f| super::draw(f, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let row: Vec<String> = (2..width - 2)
+                .map(|x| buffer[(x, 1)].symbol().to_string())
+                .collect();
+            let first = row.iter().position(|symbol| symbol != " ").unwrap();
+            let last = row.iter().rposition(|symbol| symbol != " ").unwrap();
+            assert!(first <= 1, "width {width}");
+            assert!(row.len() - 1 - last <= 2, "width {width}");
+
+            // Every divider must have the same number of spaces on both sides.
+            for (index, symbol) in row.iter().enumerate() {
+                if symbol != "│" {
+                    continue;
+                }
+                let left = row[..index].iter().rev().take_while(|s| *s == " ").count();
+                let right = row[index + 1..].iter().take_while(|s| *s == " ").count();
+                assert_eq!(left, right, "width {width} divider {index}");
+            }
+        }
+    }
+
+    #[test]
+    fn tab_bar_survives_a_narrow_terminal() {
+        let app = App::new(&Config::default(), 40).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 20)).unwrap();
+        terminal.draw(|f| super::draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..40)
+            .map(|x| buffer[(x, 1)].symbol().to_string())
+            .collect();
+        assert!(row.contains("cpu"));
+        assert!(row.contains("network"));
+    }
 
     #[test]
     fn segmented_bar_colors_by_level() {

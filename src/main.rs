@@ -43,6 +43,16 @@ async fn main() -> anyhow::Result<()> {
             AppEvent::Tick => app.on_tick(),
             AppEvent::Key(key) => {
                 use crossterm::event::{KeyCode, KeyModifiers};
+                if app.theme_edit.is_some() {
+                    match key.code {
+                        KeyCode::Esc => app.cancel_theme_edit(),
+                        KeyCode::Enter => app.commit_theme_edit(),
+                        KeyCode::Backspace => app.pop_theme_char(),
+                        KeyCode::Char(c) => app.push_theme_char(c),
+                        _ => {}
+                    }
+                    continue;
+                }
                 match (key.code, key.modifiers) {
                     (KeyCode::Char('q'), _) | (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
                     (KeyCode::Tab, _) => app.next_tab(),
@@ -61,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
                             app.prev_tab();
                         }
                     }
+                    (KeyCode::Enter, _) if app.tab == Tab::Theme => app.start_theme_edit(),
                     (KeyCode::Up, _) if app.tab == Tab::Theme => app.select_theme_row(-1),
                     (KeyCode::Down, _) if app.tab == Tab::Theme => app.select_theme_row(1),
                     (KeyCode::Char('1'), _) => app.tab = Tab::Cpu,
@@ -70,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
                     (KeyCode::Char('5'), _) => app.tab = Tab::Gpu,
                     (KeyCode::Char('6'), _) => app.tab = Tab::Battery,
                     (KeyCode::Char('7'), _) => app.tab = Tab::Processes,
-                    (KeyCode::Char('8'), _) => app.tab = Tab::Theme,
+                    (KeyCode::PageDown, _) => app.open_theme(),
                     (KeyCode::Char('s'), _) => app.processes.toggle_sort(),
                     (KeyCode::Char('+'), _) => {
                         app.set_tick_rate(app.tick_rate_ms.saturating_add(100));

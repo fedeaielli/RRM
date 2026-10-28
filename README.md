@@ -53,9 +53,11 @@ banner = "#B45ADC"
 | Key | Action |
 |-----|--------|
 | ←/→ or Tab/Shift+Tab | Previous/Next tab |
-| 1-8 | Jump to tab |
+| 1-7 | Jump to tab |
+| PageDown | Open the theme tab (nothing selected) |
 | ↑/↓ (Theme tab) | Select palette entry |
 | ←/→ (Theme tab) | Change the selected color (saved to config.toml) |
+| Enter (Theme tab) | Type a hex color |
 | +/- | Increase/decrease refresh rate (100ms step) |
 | q / Ctrl+C | Quit |
 

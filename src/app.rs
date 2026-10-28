@@ -8,7 +8,8 @@ use crate::collectors::network::NetworkCollector;
 use crate::collectors::processes::{ProcessCollector, SortBy};
 use crate::config::Config;
 use crate::history::RingBuffer;
-use crate::theme::{Palette, SLOT_NAMES};
+use crate::theme::Palette;
+use ratatui::style::Color;
 use std::collections::HashMap;
 
 /// Tabs shown in the tab bar.
@@ -51,8 +52,10 @@ pub struct App {
     pub tick_rate_ms: u64,
     pub palette: Palette,
     pub config: Config,
-    pub theme_row: usize,
+    pub theme_row: Option<usize>,
     pub theme_error: Option<String>,
+    /// In-progress hex entry for the selected Theme slot.
+    pub theme_edit: Option<String>,
 }
 
 impl App {
@@ -108,8 +111,9 @@ impl App {
             tick_rate_ms: config.display.refresh_ms,
             palette: Palette::from_config(config),
             config: config.clone(),
-            theme_row: 0,
+            theme_row: None,
             theme_error: None,
+            theme_edit: None,
         })
     }
 
@@ -192,12 +196,13 @@ impl App {
             Tab::Processes => Tab::Theme,
             Tab::Theme => Tab::Cpu,
         };
+        self.clear_theme_selection();
     }
 
     /// Move to the previous tab, wrapping around at the start.
     pub fn prev_tab(&mut self) {
         self.tab = match self.tab {
-            Tab::Cpu => Tab::Processes,
+            Tab::Cpu => Tab::Theme,
             Tab::Memory => Tab::Cpu,
             Tab::Disk => Tab::Memory,
             Tab::Network => Tab::Disk,
@@ -206,24 +211,165 @@ impl App {
             Tab::Processes => Tab::Battery,
             Tab::Theme => Tab::Processes,
         };
+        self.clear_theme_selection();
     }
 
-    /// Move the Theme-tab selection, wrapping around.
+    /// Entering the Theme tab always starts with no field selected.
+    fn clear_theme_selection(&mut self) {
+        if self.tab == Tab::Theme {
+            self.theme_row = None;
+        }
+    }
+
+    /// Open the Theme tab with nothing selected.
+    pub fn open_theme(&mut self) {
+        self.tab = Tab::Theme;
+        self.theme_row = None;
+    }
+
+    /// Move the Theme-tab selection, wrapping around; the first press selects
+    /// the first field (down) or the last one (up).
     pub fn select_theme_row(&mut self, delta: i32) {
-        self.theme_row =
-            (self.theme_row as i32 + delta).rem_euclid(SLOT_NAMES.len() as i32) as usize;
+        let order = crate::theme::SLOT_ORDER;
+        let count = order.len() as i32;
+        let position = self
+            .theme_row
+            .and_then(|row| order.iter().position(|&slot| slot == row));
+        let next = match position {
+            Some(position) => (position as i32 + delta).rem_euclid(count) as usize,
+            None if delta < 0 => (count - 1) as usize,
+            None => 0,
+        };
+        self.theme_row = Some(order[next]);
     }
 
     /// Cycle the selected Theme-tab color and persist the palette.
     pub fn cycle_theme_color(&mut self, delta: i32) {
-        let color = crate::theme::cycle(self.palette.slot(self.theme_row), delta);
-        self.palette.set_slot(self.theme_row, color);
+        let Some(row) = self.theme_row else {
+            return;
+        };
+        let current = self.palette.slot(row);
+        let color = if row == crate::theme::BACKGROUND_INDEX {
+            crate::theme::cycle_background(current, delta)
+        } else {
+            crate::theme::cycle(current, delta)
+        };
+        self.palette.set_slot(row, color);
         self.palette.apply_to(&mut self.config);
         self.theme_error = self.config.save().err().map(|error| error.to_string());
+    }
+
+    /// Start editing the selected Theme slot, seeded with its current hex.
+    pub fn start_theme_edit(&mut self) {
+        let Some(row) = self.theme_row else {
+            return;
+        };
+        let color = self.palette.slot(row);
+        self.theme_edit = Some(match color {
+            Color::Rgb(..) => crate::theme::to_hex(color),
+            _ => String::new(),
+        });
+        self.theme_error = None;
+    }
+
+    pub fn cancel_theme_edit(&mut self) {
+        self.theme_edit = None;
+    }
+
+    pub fn push_theme_char(&mut self, c: char) {
+        if let Some(buffer) = &mut self.theme_edit
+            && buffer.len() < 7
+            && (c.is_ascii_hexdigit() || c == '#')
+        {
+            buffer.push(c);
+        }
+    }
+
+    pub fn pop_theme_char(&mut self) {
+        if let Some(buffer) = &mut self.theme_edit {
+            buffer.pop();
+        }
+    }
+
+    /// Parse the hex buffer, apply it and persist; keeps editing on bad input.
+    pub fn commit_theme_edit(&mut self) {
+        let Some(buffer) = self.theme_edit.clone() else {
+            return;
+        };
+        let Some(row) = self.theme_row else {
+            return;
+        };
+        match crate::theme::parse_hex(&buffer) {
+            Some(color) => {
+                self.palette.set_slot(row, color);
+                self.palette.apply_to(&mut self.config);
+                self.theme_error = self.config.save().err().map(|error| error.to_string());
+                self.theme_edit = None;
+            }
+            None => self.theme_error = Some(format!("invalid color: {buffer}")),
+        }
     }
 
     /// Set the refresh interval, clamped to the supported range.
     pub fn set_tick_rate(&mut self, ms: u64) {
         self.tick_rate_ms = ms.clamp(100, 10_000);
+    }
+}
+
+#[cfg(test)]
+mod tab_tests {
+    use super::{App, Tab};
+    use crate::config::Config;
+
+    #[test]
+    fn arrows_include_the_theme_tab() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        app.tab = Tab::Processes;
+        app.next_tab();
+        assert_eq!(app.tab, Tab::Theme);
+        app.next_tab();
+        assert_eq!(app.tab, Tab::Cpu);
+        app.prev_tab();
+        assert_eq!(app.tab, Tab::Theme);
+        app.prev_tab();
+        assert_eq!(app.tab, Tab::Processes);
+    }
+
+    #[test]
+    fn page_down_opens_theme_without_selection() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        app.tab = Tab::Cpu;
+        app.open_theme();
+        assert_eq!(app.tab, Tab::Theme);
+        assert_eq!(app.theme_row, None);
+    }
+
+    #[test]
+    fn first_arrow_press_selects_the_first_visible_field() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        app.select_theme_row(1);
+        assert_eq!(app.theme_row, Some(7), "background is the first row shown");
+        app.select_theme_row(-1);
+        assert_eq!(app.theme_row, Some(6), "banner is the last row shown");
+
+        app.theme_row = None;
+        app.select_theme_row(-1);
+        assert_eq!(app.theme_row, Some(6));
+    }
+
+    #[test]
+    fn entering_theme_clears_the_selection() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        app.theme_row = Some(2);
+        app.tab = Tab::Processes;
+        app.next_tab();
+        assert_eq!(app.tab, Tab::Theme);
+        assert_eq!(app.theme_row, None);
+
+        app.theme_row = Some(3);
+        app.tab = Tab::Cpu;
+        app.prev_tab();
+        assert_eq!(app.tab, Tab::Theme);
+        assert_eq!(app.theme_row, None);
     }
 }
