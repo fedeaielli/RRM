@@ -34,7 +34,10 @@ pub struct App {
     pub gpu: Option<Box<dyn GpuProvider>>,
 
     pub cpu_history: RingBuffer,
+    pub cpu_core_histories: Vec<RingBuffer>,
     pub mem_history: RingBuffer,
+    pub swap_history: RingBuffer,
+    pub battery_charge_history: RingBuffer,
     pub net_rx_history: HashMap<String, RingBuffer>,
     pub net_tx_history: HashMap<String, RingBuffer>,
     pub disk_read_history: HashMap<String, RingBuffer>,
@@ -69,7 +72,9 @@ impl App {
         let mut processes = ProcessCollector::new(config.processes.top_n, sort_by)?;
         processes.update()?;
 
-        let capacity = (terminal_width as usize).max(1);
+        // Braille charts consume two samples per column.
+        let capacity = (terminal_width as usize).max(1) * 2;
+        let num_cores = cpu.latest.per_core_percent.len();
 
         Ok(Self {
             tab: Tab::Cpu,
@@ -81,7 +86,10 @@ impl App {
             processes,
             gpu: detect_gpu(),
             cpu_history: RingBuffer::new(capacity),
+            cpu_core_histories: (0..num_cores).map(|_| RingBuffer::new(capacity)).collect(),
             mem_history: RingBuffer::new(capacity),
+            swap_history: RingBuffer::new(capacity),
+            battery_charge_history: RingBuffer::new(capacity),
             net_rx_history: HashMap::new(),
             net_tx_history: HashMap::new(),
             disk_read_history: HashMap::new(),
@@ -108,6 +116,12 @@ impl App {
             0.0
         };
         self.mem_history.push(mem_percent);
+        let swap_percent = if self.memory.latest.swap_total_kb > 0 {
+            self.memory.latest.swap_used_kb as f32 / self.memory.latest.swap_total_kb as f32 * 100.0
+        } else {
+            0.0
+        };
+        self.swap_history.push(swap_percent);
 
         let capacity = self.cpu_history.capacity();
         for sample in &self.network.latest {
@@ -130,6 +144,16 @@ impl App {
                 .entry(sample.device.clone())
                 .or_insert_with(|| RingBuffer::new(capacity))
                 .push((sample.write_bytes_per_sec / 1024.0) as f32);
+        }
+
+        for (index, history) in self.cpu_core_histories.iter_mut().enumerate() {
+            if let Some(&percent) = self.cpu.latest.per_core_percent.get(index) {
+                history.push(percent);
+            }
+        }
+        if let Some(battery) = self.battery.batteries.first() {
+            self.battery_charge_history
+                .push(battery.capacity_percent as f32);
         }
     }
 

@@ -14,6 +14,11 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     };
 
+    let usage = gpu.usage_percent().ok();
+    let vram_used = gpu.vram_used_mb().ok();
+    let vram_total = gpu.vram_total_mb().ok();
+    let temperature = gpu.temperature_celsius().ok();
+
     let outer = panel(format!("gpu — {}", gpu.name().to_lowercase()), accent);
     let inner = outer.inner(area);
     frame.render_widget(outer, area);
@@ -25,59 +30,73 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
 
-    let usage = gpu.usage_percent().ok();
-    let vram_used = gpu.vram_used_mb().ok();
-    let vram_total = gpu.vram_total_mb().ok();
-    let temperature = gpu.temperature_celsius().ok();
+    let is_intel_limited = usage.is_none() && (vram_total.is_none() || vram_total == Some(0));
+    if is_intel_limited {
+        draw_intel_info(frame, inner, temperature, accent);
+        return;
+    }
 
-    let [usage_row, vram_row, temperature_row, context_area] = Layout::vertical([
+    let [usage_area, vram_area, temperature_area] = Layout::vertical([
         Constraint::Length(2),
         Constraint::Length(2),
-        Constraint::Length(2),
-        Constraint::Min(0),
+        Constraint::Length(1),
     ])
     .areas(inner);
 
-    draw_usage(frame, usage_row, usage);
-    draw_vram(frame, vram_row, vram_used, vram_total, accent);
-    draw_temperature(frame, temperature_row, temperature);
+    draw_usage(frame, usage_area, usage);
+    draw_vram(frame, vram_area, vram_used, vram_total, accent);
+    draw_temperature(frame, temperature_area, temperature);
+}
 
-    let missing = usize::from(usage.is_none())
-        + usize::from(vram_used.is_none())
-        + usize::from(temperature.is_none());
-    let intel_usage_unavailable = usage == Some(0.0) && vram_total == Some(0);
-    if intel_usage_unavailable || missing >= 2 {
-        let [_, text_area, _] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-        ])
-        .areas(context_area);
-        let message = if intel_usage_unavailable {
-            "note: intel igpu — usage via sysfs not available"
-        } else {
-            "intel gpu detected — usage and vram not exposed via sysfs"
-        };
-        let paragraph = Paragraph::new(dim_text(message)).alignment(Alignment::Center);
-        frame.render_widget(paragraph, text_area);
+fn draw_intel_info(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    temperature: Option<f32>,
+    accent: Color,
+) {
+    let [_, text_area] = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+
+    let mut lines = vec![
+        Line::from(Span::styled(
+            "intel integrated graphics",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(dim_text(
+            "usage and vram usage are not available via sysfs on this gpu.",
+        )),
+    ];
+    if let Some(temperature) = temperature {
+        lines.push(Line::from(vec![
+            dim_text("temperature:  "),
+            Span::styled(
+                format!("{temperature:.1}°C"),
+                Style::default()
+                    .fg(threshold_color(temperature))
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
     }
+    lines.push(Line::from(""));
+    lines.push(Line::from(dim_text(
+        "to monitor intel gpu activity, consider:",
+    )));
+    lines.push(Line::from("  intel_gpu_top"));
+    lines.push(Line::from(dim_text("  package: intel-gpu-tools")));
+    lines.push(Line::from("  sudo intel_gpu_top"));
+
+    frame.render_widget(Paragraph::new(lines), text_area);
 }
 
 fn draw_usage(frame: &mut ratatui::Frame, area: Rect, usage: Option<f32>) {
-    let [_, line_area, _] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-    let [label_area, gauge_area, suffix_area] = Layout::horizontal([
-        Constraint::Length(12),
-        Constraint::Min(0),
-        Constraint::Length(10),
-    ])
-    .areas(line_area);
-
+    if area.height == 0 {
+        return;
+    }
+    let [label_area, gauge_row] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
     frame.render_widget(Paragraph::new(dim_text("usage")), label_area);
+
+    let [gauge_area, suffix_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(10)]).areas(gauge_row);
 
     let (ratio, color, suffix, style) = match usage {
         Some(value) => {
@@ -85,11 +104,11 @@ fn draw_usage(frame: &mut ratatui::Frame, area: Rect, usage: Option<f32>) {
             (
                 (f64::from(value) / 100.0).clamp(0.0, 1.0),
                 color,
-                format!("  {value:.1}%"),
+                format!("{value:.1}%"),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
             )
         }
-        None => (0.0, DIM, "  n/a".to_string(), Style::default().fg(DIM)),
+        None => (0.0, DIM, "n/a".to_string(), Style::default().fg(DIM)),
     };
 
     let gauge = LineGauge::default()
@@ -99,7 +118,10 @@ fn draw_usage(frame: &mut ratatui::Frame, area: Rect, usage: Option<f32>) {
         .label("")
         .ratio(ratio);
     frame.render_widget(gauge, gauge_area);
-    frame.render_widget(Paragraph::new(Span::styled(suffix, style)), suffix_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(suffix, style)).alignment(Alignment::Right),
+        suffix_area,
+    );
 }
 
 fn draw_vram(
@@ -109,20 +131,15 @@ fn draw_vram(
     total: Option<u64>,
     accent: Color,
 ) {
-    let [_, line_area, _] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-    let [label_area, gauge_area, suffix_area] = Layout::horizontal([
-        Constraint::Length(12),
-        Constraint::Min(0),
-        Constraint::Length(26),
-    ])
-    .areas(line_area);
-
+    if area.height == 0 {
+        return;
+    }
+    let [label_area, gauge_row] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
     frame.render_widget(Paragraph::new(dim_text("vram")), label_area);
+
+    let [gauge_area, suffix_area] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(24)]).areas(gauge_row);
 
     let (ratio, color, suffix, style) = match (used, total) {
         (Some(used), Some(total)) => {
@@ -134,11 +151,11 @@ fn draw_vram(
             (
                 ratio,
                 accent,
-                format!("  {used} MiB / {total} MiB"),
+                format!("{used} MiB / {total} MiB"),
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             )
         }
-        _ => (0.0, DIM, "  n/a".to_string(), Style::default().fg(DIM)),
+        _ => (0.0, DIM, "n/a".to_string(), Style::default().fg(DIM)),
     };
 
     let gauge = LineGauge::default()
@@ -148,34 +165,28 @@ fn draw_vram(
         .label("")
         .ratio(ratio);
     frame.render_widget(gauge, gauge_area);
-    frame.render_widget(Paragraph::new(Span::styled(suffix, style)), suffix_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(suffix, style)).alignment(Alignment::Right),
+        suffix_area,
+    );
 }
 
 fn draw_temperature(frame: &mut ratatui::Frame, area: Rect, temperature: Option<f32>) {
-    let [_, line_area, _] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
-    ])
-    .areas(area);
-
-    let Some(value) = temperature else {
-        let paragraph = Paragraph::new(dim_text("temp: check hwmon config"));
-        frame.render_widget(paragraph, line_area);
+    if area.height == 0 {
         return;
-    };
-
+    }
     let [label_area, value_area] =
-        Layout::horizontal([Constraint::Length(12), Constraint::Min(0)]).areas(line_area);
-
+        Layout::horizontal([Constraint::Length(12), Constraint::Min(0)]).areas(area);
     frame.render_widget(Paragraph::new(dim_text("temp")), label_area);
 
-    let text = format!("  {value:.1}°C");
-    let style = Style::default()
-        .fg(threshold_color(value))
-        .add_modifier(Modifier::BOLD);
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(text, style))),
-        value_area,
-    );
+    let text = match temperature {
+        Some(value) => Line::from(Span::styled(
+            format!("{value:.1}°C"),
+            Style::default()
+                .fg(threshold_color(value))
+                .add_modifier(Modifier::BOLD),
+        )),
+        None => Line::from(dim_text("n/a")),
+    };
+    frame.render_widget(Paragraph::new(text), value_area);
 }

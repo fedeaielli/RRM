@@ -49,6 +49,12 @@ impl Collector for CpuCollector {
         let mut delta_idle_sum: u64 = 0;
 
         for (index, core) in cores.iter().enumerate() {
+            let previous = self
+                .latest
+                .per_core_percent
+                .get(index)
+                .copied()
+                .unwrap_or(0.0);
             match (self.prev_total.get(index), self.prev_idle.get(index)) {
                 (Some(&prev_total), Some(&prev_idle)) => {
                     let delta_total = core.total.saturating_sub(prev_total);
@@ -57,13 +63,21 @@ impl Collector for CpuCollector {
                     delta_total_sum = delta_total_sum.saturating_add(delta_total);
                     delta_idle_sum = delta_idle_sum.saturating_add(delta_idle);
 
-                    per_core_percent.push(usage_percent(delta_idle, delta_total));
+                    per_core_percent.push(if delta_total == 0 {
+                        previous
+                    } else {
+                        usage_percent(delta_idle, delta_total)
+                    });
                 }
-                _ => per_core_percent.push(0.0),
+                _ => per_core_percent.push(previous),
             }
         }
 
-        let total_percent = usage_percent(delta_idle_sum, delta_total_sum);
+        let total_percent = if delta_total_sum == 0 {
+            self.latest.total_percent
+        } else {
+            usage_percent(delta_idle_sum, delta_total_sum)
+        };
         let frequencies_mhz = read_frequencies(cores.len());
         let temperature_celsius = read_temperature();
 

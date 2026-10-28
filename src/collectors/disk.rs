@@ -17,10 +17,18 @@ pub struct PartitionSample {
     pub free_bytes: u64,
 }
 
-/// Collects disk I/O rates and partition usage.
+/// Compressed RAM block device usage.
+pub struct ZramSample {
+    pub name: String,
+    pub used_bytes: u64,
+    pub total_bytes: u64,
+}
+
+/// Collects disk I/O rates, partition and zram usage.
 pub struct DiskCollector {
     pub io: Vec<DiskSample>,
     pub partitions: Vec<PartitionSample>,
+    pub zram: Vec<ZramSample>,
     prev_reads: HashMap<String, u64>,
     prev_writes: HashMap<String, u64>,
     prev_time: Instant,
@@ -47,6 +55,7 @@ impl DiskCollector {
         Ok(Self {
             io: Vec::new(),
             partitions: Vec::new(),
+            zram: Vec::new(),
             prev_reads,
             prev_writes,
             prev_time: Instant::now(),
@@ -99,6 +108,7 @@ impl Collector for DiskCollector {
 
         self.io = io;
         self.partitions = read_partitions();
+        self.zram = read_zram();
         self.prev_reads = reads;
         self.prev_writes = writes;
         self.prev_time = Instant::now();
@@ -157,6 +167,48 @@ fn is_relevant_device(device: &str) -> bool {
             .unwrap_or(false),
         Err(_) => false,
     }
+}
+
+/// Read zram devices: `mem_used_total` over the configured disk size.
+fn read_zram() -> Vec<ZramSample> {
+    let Ok(entries) = std::fs::read_dir("/sys/block") else {
+        return Vec::new();
+    };
+
+    let mut zram = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.starts_with("zram") {
+            continue;
+        }
+
+        let base = format!("/sys/block/{name}");
+        let Ok(total_bytes) = read_u64(&format!("{base}/disksize")) else {
+            continue;
+        };
+        let used_bytes = std::fs::read_to_string(format!("{base}/mm_stat"))
+            .ok()
+            .and_then(|raw| parse_mm_stat(&raw))
+            .unwrap_or(0);
+
+        zram.push(ZramSample {
+            name,
+            used_bytes,
+            total_bytes,
+        });
+    }
+
+    zram.sort_by(|a, b| a.name.cmp(&b.name));
+    zram
+}
+
+fn read_u64(path: &str) -> anyhow::Result<u64> {
+    Ok(std::fs::read_to_string(path)?.trim().parse::<u64>()?)
+}
+
+/// `mem_used_total` is the third field of `/sys/block/zram*/mm_stat`.
+fn parse_mm_stat(raw: &str) -> Option<u64> {
+    raw.split_whitespace().nth(2)?.parse().ok()
 }
 
 /// Read supported real filesystems from `/proc/mounts` and stat each mount.
@@ -236,4 +288,18 @@ fn unescape_mount(input: &str) -> String {
     }
 
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mm_stat;
+
+    #[test]
+    fn mm_stat_uses_mem_used_total() {
+        assert_eq!(
+            parse_mm_stat("4096 1024 2048 0 2048 0 0 0 0 0\n"),
+            Some(2048)
+        );
+        assert_eq!(parse_mm_stat(""), None);
+    }
 }

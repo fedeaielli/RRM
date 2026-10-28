@@ -1,10 +1,10 @@
-use super::{DIM, accent, dim_text, panel, render_empty, threshold_color};
+use super::{accent, braille, dim_text, panel, render_empty, segmented_bar, threshold_color};
 use crate::app::App;
-use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::symbols;
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{LineGauge, Paragraph, Sparkline};
+use crate::history::RingBuffer;
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
+use ratatui::widgets::Paragraph;
 
 pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let accent = accent(app);
@@ -22,102 +22,150 @@ pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
 
-    let [ram_area, swap_area, history_area] = Layout::vertical([
+    let [ram_area, swap_area, _spacer_area, charts_area] = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(3),
-        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Min(4),
     ])
     .areas(inner);
+    let [ram_chart_area, swap_chart_area] =
+        Layout::vertical([Constraint::Fill(2), Constraint::Fill(1)]).areas(charts_area);
 
     let ram_percent = percent(memory.used_kb, memory.total_kb);
-    draw_usage_row(
+    draw_gauge_row(
         frame,
         ram_area,
-        &format!(
-            "ram  {:.1} / {:.1} GiB",
-            memory.used_kb as f64 / 1_048_576.0,
-            memory.total_kb as f64 / 1_048_576.0
-        ),
+        "RAM",
+        memory.used_kb,
+        memory.total_kb,
         ram_percent,
-        false,
+        accent,
     );
-
-    let swap_percent = percent(memory.swap_used_kb, memory.swap_total_kb);
-    draw_usage_row(
+    draw_chart(
         frame,
-        swap_area,
-        &format!(
-            "swap {:.1} / {:.1} GiB",
-            memory.swap_used_kb as f64 / 1_048_576.0,
-            memory.swap_total_kb as f64 / 1_048_576.0
-        ),
-        swap_percent,
-        memory.swap_total_kb == 0,
+        ram_chart_area,
+        "ram usage",
+        &app.mem_history,
+        ram_percent,
+        accent,
     );
 
-    let history: Vec<u64> = app
-        .mem_history
-        .as_slice()
-        .iter()
-        .map(|value| (*value * 10.0) as u64)
-        .collect();
-    let sparkline = Sparkline::default()
-        .block(panel("ram history", accent))
-        .data(&history)
-        .style(Style::default().fg(threshold_color(ram_percent)));
-    frame.render_widget(sparkline, history_area);
+    if memory.swap_total_kb == 0 {
+        draw_disabled_row(frame, swap_area, "swap  not available");
+        render_empty(
+            frame,
+            swap_chart_area,
+            "swap usage",
+            "not available",
+            accent,
+        );
+    } else {
+        let swap_percent = percent(memory.swap_used_kb, memory.swap_total_kb);
+        draw_gauge_row(
+            frame,
+            swap_area,
+            "SWAP",
+            memory.swap_used_kb,
+            memory.swap_total_kb,
+            swap_percent,
+            accent,
+        );
+        draw_chart(
+            frame,
+            swap_chart_area,
+            "swap usage",
+            &app.swap_history,
+            swap_percent,
+            accent,
+        );
+    }
 }
 
-fn draw_usage_row(
+fn draw_gauge_row(
     frame: &mut ratatui::Frame,
     area: Rect,
     label: &str,
+    used_kb: u64,
+    total_kb: u64,
     percent: f32,
-    disabled: bool,
+    accent: Color,
 ) {
-    if disabled {
-        let [_, line_area, _] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-        ])
-        .areas(area);
-        frame.render_widget(Paragraph::new(dim_text("swap  disabled")), line_area);
+    if area.height == 0 {
         return;
     }
 
-    let color = threshold_color(percent);
-    let [label_area, gauge_area] =
-        Layout::horizontal([Constraint::Length(20), Constraint::Min(0)]).areas(area);
-    let [_, label_line, _] = Layout::vertical([
+    let [_, row_area, _] = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Fill(1),
     ])
-    .areas(label_area);
-    let [_, gauge_line, _] = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(1),
-        Constraint::Fill(1),
+    .areas(area);
+    let [label_area, gauge_area, value_area] = Layout::horizontal([
+        Constraint::Length(22),
+        Constraint::Min(0),
+        Constraint::Length(20),
     ])
-    .areas(gauge_area);
+    .areas(row_area);
 
     let label = Paragraph::new(Span::styled(
         label.to_string(),
-        Style::default().fg(color).add_modifier(Modifier::BOLD),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
     ));
-    frame.render_widget(label, label_line);
+    frame.render_widget(label, label_area);
 
-    let gauge = LineGauge::default()
-        .filled_style(Style::default().fg(color))
-        .unfilled_style(Style::default().fg(DIM))
-        .line_set(symbols::line::THICK)
-        .label(Line::from(Span::styled(
-            format!("{percent:.1}% "),
-            Style::default().fg(color).add_modifier(Modifier::BOLD),
-        )))
-        .ratio((f64::from(percent) / 100.0).clamp(0.0, 1.0));
-    frame.render_widget(gauge, gauge_line);
+    let color = threshold_color(percent);
+    frame.render_widget(
+        Paragraph::new(segmented_bar(percent, gauge_area.width, threshold_color)),
+        gauge_area,
+    );
+
+    let value = Paragraph::new(Span::styled(
+        format!(
+            "{:.1} / {:.1} GiB  {:>3.0}%",
+            used_kb as f64 / 1_048_576.0,
+            total_kb as f64 / 1_048_576.0,
+            percent
+        ),
+        Style::default().fg(color).add_modifier(Modifier::BOLD),
+    ))
+    .alignment(Alignment::Right);
+    frame.render_widget(value, value_area);
+}
+
+fn draw_disabled_row(frame: &mut ratatui::Frame, area: Rect, text: &str) {
+    if area.height == 0 {
+        return;
+    }
+
+    let [_, line_area, _] = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .areas(area);
+    frame.render_widget(Paragraph::new(dim_text(text)), line_area);
+}
+
+fn draw_chart(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    title: &str,
+    history: &RingBuffer,
+    percent: f32,
+    accent: Color,
+) {
+    let block = panel(title, accent);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    braille::render(
+        frame,
+        inner,
+        history,
+        10.0,
+        1000,
+        Style::default().fg(threshold_color(percent)),
+    );
 }
 
 fn percent(used_kb: u64, total_kb: u64) -> f32 {

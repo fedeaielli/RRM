@@ -1,105 +1,42 @@
-use super::{CYAN, DIM, MGNTA, accent, dim_text, disk_usage_color, panel, render_empty};
+use super::{
+    DIM, RX, TX, accent, braille, dim_text, disk_usage_color, format_bytes, format_rate, panel,
+    render_empty, segmented_bar, threshold_color,
+};
 use crate::app::App;
 use crate::history::RingBuffer;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
-use ratatui::style::{Modifier, Style};
-use ratatui::symbols;
+use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{LineGauge, Paragraph, Sparkline};
-use std::collections::HashMap;
+use ratatui::widgets::Paragraph;
 
 pub fn draw(frame: &mut ratatui::Frame, area: Rect, app: &App) {
     let accent = accent(app);
-    let [io_area, partition_area] =
-        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).areas(area);
-
-    draw_io(frame, io_area, app, accent);
-    draw_partitions(frame, partition_area, app, accent);
-}
-
-fn draw_io(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: ratatui::style::Color) {
-    if app.disk.io.is_empty() {
-        render_empty(frame, area, "io", "no disk i/o data", accent);
-        return;
-    }
-
-    let block = panel("io", accent);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    if inner.height == 0 {
-        return;
-    }
-
-    let mut constraints: Vec<Constraint> =
-        app.disk.io.iter().map(|_| Constraint::Length(3)).collect();
-    constraints.push(Constraint::Min(0));
-    let sections = Layout::vertical(constraints).split(inner);
-
-    for (sample, section) in app.disk.io.iter().zip(sections.iter()) {
-        draw_io_section(frame, *section, sample, app, accent);
-    }
-}
-
-fn draw_io_section(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    sample: &crate::collectors::disk::DiskSample,
-    app: &App,
-    accent: ratatui::style::Color,
-) {
-    if area.height == 0 {
-        return;
-    }
-
-    let [name_area, read_area, write_area] = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
-        Constraint::Length(1),
+    let partition_height = (app.disk.partitions.len() as u16 + 2)
+        .max(3)
+        .min((area.height / 2).max(3));
+    let zram_height = if app.disk.zram.is_empty() {
+        0
+    } else {
+        app.disk.zram.len() as u16 + 2
+    };
+    let [partition_area, io_area, zram_area] = Layout::vertical([
+        Constraint::Length(partition_height),
+        Constraint::Min(0),
+        Constraint::Length(zram_height),
     ])
     .areas(area);
 
-    let active = sample.read_bytes_per_sec > 0.0 || sample.write_bytes_per_sec > 0.0;
-    let name_style = if active {
-        Style::default().fg(accent).add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(DIM)
-    };
-    let read_style = Style::default().fg(if active { CYAN } else { DIM });
-    let write_style = Style::default().fg(if active { MGNTA } else { DIM });
-
-    let name = Line::from(vec![
-        Span::styled(format!("{}   ", sample.device), name_style),
-        Span::styled(
-            format!("↓ {}", format_rate(sample.read_bytes_per_sec)),
-            read_style,
-        ),
-        dim_text("   "),
-        Span::styled(
-            format!("↑ {}", format_rate(sample.write_bytes_per_sec)),
-            write_style,
-        ),
-    ]);
-    frame.render_widget(Paragraph::new(name), name_area);
-
-    let read_history = history_values(&app.disk_read_history, &sample.device);
-    let read_sparkline = Sparkline::default()
-        .data(&read_history)
-        .style(Style::default().fg(CYAN));
-    frame.render_widget(read_sparkline, read_area);
-
-    let write_history = history_values(&app.disk_write_history, &sample.device);
-    let write_sparkline = Sparkline::default()
-        .data(&write_history)
-        .style(Style::default().fg(MGNTA));
-    frame.render_widget(write_sparkline, write_area);
+    draw_partitions(frame, partition_area, app, accent);
+    draw_io(frame, io_area, app, accent);
+    draw_zram(frame, zram_area, app, accent);
 }
 
-fn draw_partitions(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    app: &App,
-    accent: ratatui::style::Color,
-) {
+fn draw_partitions(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
+    if app.disk.partitions.is_empty() {
+        render_empty(frame, area, "partitions", "no partitions found", accent);
+        return;
+    }
+
     let block = panel("partitions", accent);
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -111,7 +48,7 @@ fn draw_partitions(
         .disk
         .partitions
         .iter()
-        .map(|_| Constraint::Length(2))
+        .map(|_| Constraint::Length(1))
         .collect();
     constraints.push(Constraint::Min(0));
     let sections = Layout::vertical(constraints).split(inner);
@@ -120,87 +57,180 @@ fn draw_partitions(
         if section.height == 0 {
             continue;
         }
-
-        let [mount_area, gauge_area, size_area] = Layout::horizontal([
-            Constraint::Length(20),
-            Constraint::Min(0),
-            Constraint::Length(14),
-        ])
-        .areas(*section);
-        draw_partition_row(frame, mount_area, gauge_area, size_area, partition);
+        let used_bytes = partition.total_bytes.saturating_sub(partition.free_bytes);
+        draw_usage_row(
+            frame,
+            *section,
+            &partition.mount,
+            used_bytes,
+            partition.total_bytes,
+            disk_usage_color,
+        );
     }
 }
 
-fn draw_partition_row(
+fn draw_zram(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
+    if area.height == 0 || app.disk.zram.is_empty() {
+        return;
+    }
+
+    let block = panel("zram", accent);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let sections = Layout::vertical(
+        app.disk
+            .zram
+            .iter()
+            .map(|_| Constraint::Length(1))
+            .chain(std::iter::once(Constraint::Min(0))),
+    )
+    .split(inner);
+
+    for (sample, section) in app.disk.zram.iter().zip(sections.iter()) {
+        if section.height == 0 {
+            continue;
+        }
+        draw_usage_row(
+            frame,
+            *section,
+            &sample.name,
+            sample.used_bytes,
+            sample.total_bytes,
+            threshold_color,
+        );
+    }
+}
+
+fn draw_usage_row(
     frame: &mut ratatui::Frame,
-    mount_area: Rect,
-    gauge_area: Rect,
-    size_area: Rect,
-    partition: &crate::collectors::disk::PartitionSample,
+    area: Rect,
+    label: &str,
+    used_bytes: u64,
+    total_bytes: u64,
+    color: fn(f32) -> Color,
 ) {
-    let total_gib = gib(partition.total_bytes);
-    let used_gib = gib(partition.total_bytes.saturating_sub(partition.free_bytes));
-    let used_percent = if total_gib > 0.0 {
-        (used_gib / total_gib * 100.0) as f32
+    let used_percent = if total_bytes > 0 {
+        (used_bytes as f64 / total_bytes as f64 * 100.0) as f32
     } else {
         0.0
     };
 
-    let mount = Paragraph::new(dim_text(truncate_mount(&partition.mount)));
-    frame.render_widget(mount, mount_area);
+    let [label_area, gauge_area, size_area] = Layout::horizontal([
+        Constraint::Length(18),
+        Constraint::Min(0),
+        Constraint::Length(22),
+    ])
+    .areas(area);
 
-    let gauge = LineGauge::default()
-        .filled_style(Style::default().fg(disk_usage_color(used_percent)))
-        .unfilled_style(Style::default().fg(DIM))
-        .line_set(symbols::line::THICK)
-        .ratio((f64::from(used_percent) / 100.0).clamp(0.0, 1.0));
-    frame.render_widget(gauge, gauge_area);
+    frame.render_widget(Paragraph::new(dim_text(truncate_mount(label))), label_area);
+    frame.render_widget(
+        Paragraph::new(segmented_bar(used_percent, gauge_area.width, color)),
+        gauge_area,
+    );
 
-    let size = Paragraph::new(dim_text(size_label(used_gib, total_gib, size_area.width)))
-        .alignment(Alignment::Right);
+    let size = Paragraph::new(dim_text(format!(
+        "{}/{}",
+        format_bytes(used_bytes),
+        format_bytes(total_bytes)
+    )))
+    .alignment(Alignment::Right);
     frame.render_widget(size, size_area);
 }
 
-/// Render `used/total GiB`, dropping the space when the column is too narrow.
-fn size_label(used_gib: f64, total_gib: f64, width: u16) -> String {
-    let label = format!("{used_gib:.1}/{total_gib:.1} GiB");
-    if label.chars().count() as u16 <= width {
-        return label;
+fn draw_io(frame: &mut ratatui::Frame, area: Rect, app: &App, accent: Color) {
+    let devices: Vec<&crate::collectors::disk::DiskSample> = app
+        .disk
+        .io
+        .iter()
+        .filter(|sample| !sample.device.starts_with("zram"))
+        .collect();
+
+    if devices.is_empty() {
+        render_empty(frame, area, "disk i/o", "no disk i/o data", accent);
+        return;
     }
 
-    format!("{used_gib:.1}/{total_gib:.1}GiB")
+    let count = devices.len() as u32;
+    let constraints: Vec<Constraint> = devices
+        .iter()
+        .map(|_| Constraint::Ratio(1, count))
+        .collect();
+    let sections = Layout::horizontal(constraints).split(area);
+
+    for (sample, section) in devices.iter().zip(sections.iter()) {
+        draw_io_device(frame, *section, sample, app, accent);
+    }
 }
 
-fn history_values(histories: &HashMap<String, RingBuffer>, device: &str) -> Vec<u64> {
-    histories
-        .get(device)
-        .map(|buffer| {
-            buffer
-                .as_slice()
-                .iter()
-                .map(|value| *value as u64)
-                .collect()
-        })
-        .unwrap_or_default()
+fn draw_io_device(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    sample: &crate::collectors::disk::DiskSample,
+    app: &App,
+    accent: Color,
+) {
+    let block = panel(sample.device.clone(), accent);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let [rate_area, chart_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Fill(1)]).areas(inner);
+
+    let read = sample.read_bytes_per_sec;
+    let write = sample.write_bytes_per_sec;
+    let rates = Line::from(vec![
+        Span::styled(
+            format!("↓ read  {}", format_rate(read)),
+            Style::default().fg(if read > 0.0 { RX } else { DIM }),
+        ),
+        dim_text("   "),
+        Span::styled(
+            format!("↑ write {}", format_rate(write)),
+            Style::default().fg(if write > 0.0 { TX } else { DIM }),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(rates), rate_area);
+
+    draw_rw(
+        frame,
+        chart_area,
+        app.disk_read_history.get(&sample.device),
+        app.disk_write_history.get(&sample.device),
+    );
 }
 
-fn gib(bytes: u64) -> f64 {
-    bytes as f64 / 1_073_741_824.0
+fn draw_rw(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    read: Option<&RingBuffer>,
+    write: Option<&RingBuffer>,
+) {
+    let (Some(read), Some(write)) = (read, write) else {
+        return;
+    };
+    braille::render_split(
+        frame,
+        area,
+        read,
+        write,
+        1.0 / 1024.0,
+        1,
+        Style::default().fg(RX),
+        Style::default().fg(TX),
+        Style::default().fg(DIM),
+    );
 }
 
 fn truncate_mount(mount: &str) -> &str {
     mount
         .char_indices()
-        .nth_back(19)
+        .nth_back(17)
         .map_or(mount, |(index, _)| &mount[index..])
-}
-
-fn format_rate(bytes_per_sec: f64) -> String {
-    if bytes_per_sec < 1_024.0 {
-        format!("{bytes_per_sec:.0} B/s")
-    } else if bytes_per_sec < 1_048_576.0 {
-        format!("{:.1} KB/s", bytes_per_sec / 1_024.0)
-    } else {
-        format!("{:.2} MB/s", bytes_per_sec / 1_048_576.0)
-    }
 }

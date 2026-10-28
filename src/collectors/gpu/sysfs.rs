@@ -59,22 +59,8 @@ impl GpuProvider for SysFsGpu {
     }
 
     fn usage_percent(&self) -> anyhow::Result<f32> {
-        match read_f32(self.card_path.join("device/gpu_busy_percent"), "GPU usage") {
-            Ok(usage) => Ok(usage),
-            Err(error) => {
-                if self.vendor == "Intel" {
-                    // i915 does not expose a busy percentage. Probe the GT
-                    // frequency node for diagnostics, then report idle
-                    // instead of an unknown value.
-                    let _gt_frequency = read_f32(
-                        self.card_path.join("gt/gt0/rps_cur_freq_mhz"),
-                        "GT frequency",
-                    );
-                    return Ok(0.0);
-                }
-                Err(error)
-            }
-        }
+        // i915/xe expose no busy percentage; callers show N/A.
+        read_f32(self.card_path.join("device/gpu_busy_percent"), "GPU usage")
     }
 
     fn vram_used_mb(&self) -> anyhow::Result<u64> {
