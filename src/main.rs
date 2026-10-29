@@ -63,6 +63,11 @@ async fn main() -> anyhow::Result<()> {
                     (KeyCode::Enter, _) if app.tab == Tab::Theme => app.start_theme_edit(),
                     (KeyCode::Up, _) if app.tab == Tab::Theme => app.select_theme_row(-1),
                     (KeyCode::Down, _) if app.tab == Tab::Theme => app.select_theme_row(1),
+                    (KeyCode::Up, _) if app.tab == Tab::Processes => app.process_move(-1),
+                    (KeyCode::Down, _) if app.tab == Tab::Processes => app.process_move(1),
+                    (KeyCode::PageUp, _) if app.tab == Tab::Processes => app.process_move(-10),
+                    (KeyCode::Home, _) if app.tab == Tab::Processes => app.process_move(i64::MIN),
+                    (KeyCode::End, _) if app.tab == Tab::Processes => app.process_move(i64::MAX),
                     (KeyCode::Char('1'), _) => app.tab = Tab::System,
                     (KeyCode::Char('2'), _) => app.tab = Tab::Cpu,
                     (KeyCode::Char('3'), _) => app.tab = Tab::Memory,
@@ -72,8 +77,12 @@ async fn main() -> anyhow::Result<()> {
                     (KeyCode::Char('7'), _) => app.tab = Tab::Battery,
                     (KeyCode::Char('8'), _) => app.tab = Tab::Processes,
                     (KeyCode::Char('9'), _) => app.tab = Tab::Fans,
+                    (KeyCode::PageDown, _) if app.tab == Tab::Processes => app.focus_processes(),
                     (KeyCode::PageDown, _) => app.open_theme(),
-                    (KeyCode::Char('s'), _) => app.processes.toggle_sort(),
+                    (KeyCode::Char('s'), _) => app.sort_processes(),
+                    (KeyCode::Char(' '), _) if app.tab == Tab::Processes => {
+                        app.toggle_process_pause()
+                    }
                     (KeyCode::Char('+'), _) => {
                         app.set_tick_rate(app.tick_rate_ms.saturating_add(100));
                         events.set_tick_rate(app.tick_rate_ms);

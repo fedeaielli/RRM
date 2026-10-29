@@ -3,10 +3,12 @@ use std::collections::HashMap;
 use std::time::Instant;
 
 /// Column used to rank processes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SortBy {
     Cpu,
     Mem,
+    Read,
+    Write,
 }
 
 /// A single process row.
@@ -15,22 +17,24 @@ pub struct ProcessSample {
     pub name: String,
     pub cpu_percent: f32,
     pub mem_kb: u64,
+    pub read_bytes_per_sec: f64,
+    pub write_bytes_per_sec: f64,
 }
 
-/// Collects the top-N processes by CPU or memory usage.
+/// Collects every process, ranked by the selected column.
 pub struct ProcessCollector {
     pub top: Vec<ProcessSample>,
     pub total: usize,
-    top_n: usize,
     sort_by: SortBy,
     prev_cpu: HashMap<u32, u64>,
+    prev_io: HashMap<u32, (u64, u64)>,
     prev_total_cpu: u64,
     prev_time: Instant,
 }
 
 impl ProcessCollector {
     /// Create a collector seeded with the current per-process CPU counters.
-    pub fn new(top_n: usize, sort_by: SortBy) -> anyhow::Result<Self> {
+    pub fn new(sort_by: SortBy) -> anyhow::Result<Self> {
         let mut prev_cpu = HashMap::new();
         for pid in read_pids()? {
             let Ok(contents) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
@@ -46,12 +50,17 @@ impl ProcessCollector {
         Ok(Self {
             top: Vec::new(),
             total: 0,
-            top_n,
             sort_by,
             prev_cpu,
+            prev_io: HashMap::new(),
             prev_total_cpu,
             prev_time: Instant::now(),
         })
+    }
+
+    /// Active ranking column.
+    pub fn sort_by(&self) -> SortBy {
+        self.sort_by
     }
 
     /// Label for the active process ranking.
@@ -59,14 +68,34 @@ impl ProcessCollector {
         match self.sort_by {
             SortBy::Cpu => "cpu",
             SortBy::Mem => "mem",
+            SortBy::Read => "read",
+            SortBy::Write => "write",
         }
     }
 
-    /// Flip the ranking column between CPU and memory.
-    pub fn toggle_sort(&mut self) {
+    /// Sort the current rows by the active column, without re-reading /proc.
+    pub fn sort_rows(&mut self) {
+        match self.sort_by {
+            SortBy::Cpu => self
+                .top
+                .sort_by(|a, b| b.cpu_percent.total_cmp(&a.cpu_percent)),
+            SortBy::Mem => self.top.sort_by_key(|a| std::cmp::Reverse(a.mem_kb)),
+            SortBy::Read => self
+                .top
+                .sort_by(|a, b| b.read_bytes_per_sec.total_cmp(&a.read_bytes_per_sec)),
+            SortBy::Write => self
+                .top
+                .sort_by(|a, b| b.write_bytes_per_sec.total_cmp(&a.write_bytes_per_sec)),
+        }
+    }
+
+    /// Cycle the ranking column.
+    pub fn cycle_sort(&mut self) {
         self.sort_by = match self.sort_by {
             SortBy::Cpu => SortBy::Mem,
-            SortBy::Mem => SortBy::Cpu,
+            SortBy::Mem => SortBy::Read,
+            SortBy::Read => SortBy::Write,
+            SortBy::Write => SortBy::Cpu,
         };
     }
 }
@@ -76,8 +105,10 @@ impl Collector for ProcessCollector {
         let (total_cpu, num_cores) = read_cpu_summary()?;
         let delta_total = total_cpu.saturating_sub(self.prev_total_cpu);
 
+        let elapsed = self.prev_time.elapsed().as_secs_f64().max(0.001);
         let mut top = Vec::new();
         let mut cpu_counters = HashMap::new();
+        let mut io_counters = HashMap::new();
 
         for pid in read_pids()? {
             // The process may have exited since /proc was listed.
@@ -100,23 +131,32 @@ impl Collector for ProcessCollector {
 
             let mem_kb = read_vm_rss(pid).unwrap_or(0);
 
+            // /proc/[pid]/io is owner-only, so other users' processes read as 0.
+            let (read_bytes, write_bytes) = read_io(pid).unwrap_or((0, 0));
+            let (prev_read, prev_write) = self
+                .prev_io
+                .get(&pid)
+                .copied()
+                .unwrap_or((read_bytes, write_bytes));
+            io_counters.insert(pid, (read_bytes, write_bytes));
+            let read_bytes_per_sec = read_bytes.saturating_sub(prev_read) as f64 / elapsed;
+            let write_bytes_per_sec = write_bytes.saturating_sub(prev_write) as f64 / elapsed;
+
             top.push(ProcessSample {
                 pid,
                 name,
                 cpu_percent,
                 mem_kb,
+                read_bytes_per_sec,
+                write_bytes_per_sec,
             });
         }
 
-        match self.sort_by {
-            SortBy::Cpu => top.sort_by(|a, b| b.cpu_percent.total_cmp(&a.cpu_percent)),
-            SortBy::Mem => top.sort_by_key(|a| std::cmp::Reverse(a.mem_kb)),
-        }
         self.total = top.len();
-        top.truncate(self.top_n);
-
         self.top = top;
+        self.sort_rows();
         self.prev_cpu = cpu_counters;
+        self.prev_io = io_counters;
         self.prev_total_cpu = total_cpu;
         self.prev_time = Instant::now();
 
@@ -194,6 +234,25 @@ fn parse_process_stat(contents: &str) -> Option<(u32, String, u64)> {
     Some((pid, name, utime.saturating_add(stime)))
 }
 
+/// Read disk I/O counters from `/proc/[pid]/io`; unreadable for other users.
+fn read_io(pid: u32) -> Option<(u64, u64)> {
+    let contents = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
+    parse_io(&contents)
+}
+
+fn parse_io(contents: &str) -> Option<(u64, u64)> {
+    let mut read_bytes = None;
+    let mut write_bytes = None;
+    for line in contents.lines() {
+        if let Some(rest) = line.strip_prefix("read_bytes:") {
+            read_bytes = rest.trim().parse::<u64>().ok();
+        } else if let Some(rest) = line.strip_prefix("write_bytes:") {
+            write_bytes = rest.trim().parse::<u64>().ok();
+        }
+    }
+    Some((read_bytes?, write_bytes?))
+}
+
 /// Read `VmRSS` (kB) from `/proc/[pid]/status`.
 fn read_vm_rss(pid: u32) -> Option<u64> {
     let contents = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
@@ -203,4 +262,35 @@ fn read_vm_rss(pid: u32) -> Option<u64> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_io_reads_disk_counters() {
+        let sample = "rchar: 100\nwchar: 200\nread_bytes: 4096\nwrite_bytes: 8192\n";
+        assert_eq!(parse_io(sample), Some((4096, 8192)));
+        assert_eq!(parse_io("rchar: 1\n"), None);
+    }
+
+    #[test]
+    fn cycle_sort_walks_every_column() {
+        let mut collector = ProcessCollector {
+            top: Vec::new(),
+            total: 0,
+            sort_by: SortBy::Cpu,
+            prev_cpu: HashMap::new(),
+            prev_io: HashMap::new(),
+            prev_total_cpu: 0,
+            prev_time: Instant::now(),
+        };
+        let mut labels = Vec::new();
+        for _ in 0..4 {
+            collector.cycle_sort();
+            labels.push(collector.sort_label());
+        }
+        assert_eq!(labels, vec!["mem", "read", "write", "cpu"]);
+    }
 }
