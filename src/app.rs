@@ -60,6 +60,12 @@ pub struct App {
     pub palette: Palette,
     pub config: Config,
     pub theme_row: Option<usize>,
+    /// Selected process row while the Processes table has focus.
+    pub process_selected: Option<usize>,
+    /// First visible column of the Processes table.
+    pub process_column: usize,
+    /// Freeze the process list so rows stop moving while inspecting them.
+    pub process_paused: bool,
     pub theme_error: Option<String>,
     /// In-progress hex entry for the selected Theme slot.
     pub theme_edit: Option<String>,
@@ -87,7 +93,7 @@ impl App {
             "mem" => SortBy::Mem,
             _ => SortBy::Cpu,
         };
-        let mut processes = ProcessCollector::new(config.processes.top_n, sort_by)?;
+        let mut processes = ProcessCollector::new(sort_by)?;
         processes.update()?;
 
         // Braille charts consume two samples per column.
@@ -122,6 +128,9 @@ impl App {
             palette: Palette::from_config(config),
             config: config.clone(),
             theme_row: None,
+            process_selected: None,
+            process_column: 0,
+            process_paused: false,
             theme_error: None,
             theme_edit: None,
         })
@@ -135,7 +144,14 @@ impl App {
         let _ = self.disk.update();
         let _ = self.network.update();
         let _ = self.battery.update();
-        let _ = self.processes.update();
+        if !self.process_paused {
+            let _ = self.processes.update();
+        }
+        if let Some(selected) = self.process_selected
+            && selected >= self.processes.top.len()
+        {
+            self.process_selected = self.processes.top.len().checked_sub(1);
+        }
         let _ = self.fans.update();
 
         self.cpu_history.push(self.cpu.latest.total_percent);
@@ -245,6 +261,51 @@ impl App {
         if self.tab == Tab::Theme {
             self.theme_row = None;
         }
+        if self.tab != Tab::Processes {
+            self.process_selected = None;
+            self.process_column = 0;
+            self.process_paused = false;
+        }
+    }
+
+    /// Give the Processes table focus, starting on the first row.
+    pub fn focus_processes(&mut self) {
+        self.tab = Tab::Processes;
+        if self.process_selected.is_none() {
+            self.process_selected = Some(0);
+        }
+    }
+
+    /// Move the Processes selection, clamped to the list.
+    pub fn process_move(&mut self, delta: i64) {
+        let last = self.processes.top.len().saturating_sub(1);
+        let current = self.process_selected.unwrap_or(0) as i64;
+        let next = current.saturating_add(delta).clamp(0, last as i64) as usize;
+        if !self.processes.top.is_empty() {
+            self.process_selected = Some(next);
+        }
+    }
+
+    /// Scroll the Processes table horizontally, one column per press.
+    pub fn process_columns(&mut self, delta: i32) {
+        let next = self.process_column as i64 + i64::from(delta);
+        self.process_column = next.clamp(0, crate::ui::processes::MAX_COLUMN as i64) as usize;
+    }
+
+    /// Freeze or resume the process list.
+    pub fn toggle_process_pause(&mut self) {
+        self.process_paused = !self.process_paused;
+    }
+
+    /// Change the process ranking and keep the selection on a valid row.
+    pub fn sort_processes(&mut self) {
+        self.processes.cycle_sort();
+        if self.process_paused {
+            self.processes.sort_rows();
+        } else {
+            self.processes.update().ok();
+        }
+        self.process_move(0);
     }
 
     /// Open the Theme tab with nothing selected.
@@ -261,6 +322,9 @@ impl App {
             self.cancel_theme_edit();
         } else if self.tab == Tab::Theme {
             self.theme_row = None;
+        } else if self.tab == Tab::Processes && self.process_selected.is_some() {
+            self.process_selected = None;
+            self.process_column = 0;
         }
     }
 
@@ -284,6 +348,8 @@ impl App {
     pub fn arrow(&mut self, delta: i32) {
         if self.tab == Tab::Theme && self.theme_row.is_some() {
             self.cycle_theme_color(delta);
+        } else if self.tab == Tab::Processes && self.process_selected.is_some() {
+            self.process_columns(delta);
         } else if delta > 0 {
             self.next_tab();
         } else {
@@ -367,6 +433,16 @@ impl App {
 mod tab_tests {
     use super::{App, Tab};
     use crate::config::Config;
+
+    #[test]
+    fn pause_toggles_and_resets_when_leaving_the_tab() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        app.tab = Tab::Processes;
+        app.toggle_process_pause();
+        assert!(app.process_paused);
+        app.next_tab();
+        assert!(!app.process_paused);
+    }
 
     #[test]
     fn escape_cancels_editing_first() {
