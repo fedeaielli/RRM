@@ -76,6 +76,7 @@ value = "#64D282"
 | Esc (Processes tab) | Leave the table |
 | s (Processes tab) | Cycle sort: cpu → mem → read → write |
 | Space (Processes tab) | Pause/resume the process list so rows stop moving |
+| Enter (Processes tab) | Open the detail overlay for the selected process (cpu, ram, gpu, disk read/write); Esc closes it |
 | ↑/↓ (Theme tab) | Select palette entry |
 | ←/→ (Theme tab) | Change the selected color when an entry is selected, otherwise change tab |
 | Enter (Theme tab) | Type a hex color |

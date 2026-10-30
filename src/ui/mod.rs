@@ -62,6 +62,38 @@ fn percent_at(index: usize, width: usize) -> f32 {
 }
 
 /// Format a byte rate, picking B/s, KB/s or MB/s by magnitude.
+/// Wash the area out so an overlay stands out: foreground colors are blended
+/// towards the background, which reads as "blurred" behind glass.
+pub fn scrim(frame: &mut Frame, area: Rect, background: Color, keep_percent: u8) {
+    let buf = frame.buffer_mut();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let cell = &mut buf[(x, y)];
+            let current = cell.style();
+            let blended = current
+                .fg
+                .and_then(|fg| blend(fg, background, keep_percent));
+            let mut style = Style::default()
+                .fg(blended.unwrap_or(Color::Reset))
+                .bg(background);
+            if blended.is_none() {
+                style = style.add_modifier(Modifier::DIM);
+            }
+            cell.set_style(style);
+        }
+    }
+}
+
+/// Mix `fg` towards `bg`, keeping `keep_percent` of the original color.
+fn blend(fg: Color, bg: Color, keep_percent: u8) -> Option<Color> {
+    let (Color::Rgb(fr, fg_, fb), Color::Rgb(br, bg_, bb)) = (fg, bg) else {
+        return None;
+    };
+    let keep = u16::from(keep_percent.min(100));
+    let mix = |f: u8, b: u8| ((u16::from(b) * (100 - keep) + u16::from(f) * keep) / 100) as u8;
+    Some(Color::Rgb(mix(fr, br), mix(fg_, bg_), mix(fb, bb)))
+}
+
 pub fn format_rate(bytes_per_sec: f64) -> String {
     if bytes_per_sec < 1_024.0 {
         format!("{bytes_per_sec:.0} B/s")
@@ -230,13 +262,31 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
 #[cfg(test)]
 mod tests {
-    use super::{IDLE, segmented_bar};
+    use super::{IDLE, scrim, segmented_bar};
     use crate::app::App;
     use crate::config::Config;
     use crate::theme::Palette;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Style};
+    use ratatui::widgets::Paragraph;
+
+    #[test]
+    fn scrim_blends_foreground_towards_the_background() {
+        let mut terminal = Terminal::new(TestBackend::new(10, 3)).unwrap();
+        terminal
+            .draw(|frame| {
+                let text =
+                    Paragraph::new("x").style(Style::default().fg(Color::Rgb(255, 255, 255)));
+                frame.render_widget(text, frame.area());
+                scrim(frame, frame.area(), Color::Rgb(0, 0, 0), 30);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].fg, Color::Rgb(76, 76, 76));
+        assert_eq!(buffer[(0, 0)].bg, Color::Rgb(0, 0, 0));
+    }
 
     #[test]
     fn background_covers_the_whole_terminal() {
