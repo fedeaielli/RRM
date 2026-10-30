@@ -6,13 +6,16 @@ use crate::collectors::fans::FansCollector;
 use crate::collectors::gpu::{GpuProvider, detect_gpu};
 use crate::collectors::memory::MemoryCollector;
 use crate::collectors::network::NetworkCollector;
-use crate::collectors::processes::{ProcessCollector, SortBy};
+use crate::collectors::processes::{
+    DetailExtras, ProcessCollector, ProcessSample, SortBy, detail_extras,
+};
 use crate::collectors::system::SystemCollector;
 use crate::config::Config;
 use crate::history::RingBuffer;
 use crate::theme::Palette;
 use ratatui::style::Color;
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// Tabs shown in the tab bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +30,21 @@ pub enum Tab {
     Processes,
     Fans,
     Theme,
+}
+
+/// Per-process overlay: latest sample plus chart history for the open pid.
+pub struct ProcessDetail {
+    pub pid: u32,
+    pub name: String,
+    pub sample: ProcessSample,
+    pub extras: DetailExtras,
+    pub gpu_percent: f32,
+    pub cpu_history: RingBuffer,
+    pub mem_history: RingBuffer,
+    pub gpu_history: RingBuffer,
+    pub read_history: RingBuffer,
+    pub write_history: RingBuffer,
+    prev_gpu: Option<(Instant, u64)>,
 }
 
 /// Application state shared by the event loop and the UI.
@@ -66,6 +84,8 @@ pub struct App {
     pub process_column: usize,
     /// Freeze the process list so rows stop moving while inspecting them.
     pub process_paused: bool,
+    /// Detail overlay for the selected process.
+    pub process_detail: Option<ProcessDetail>,
     pub theme_error: Option<String>,
     /// In-progress hex entry for the selected Theme slot.
     pub theme_edit: Option<String>,
@@ -131,6 +151,7 @@ impl App {
             process_selected: None,
             process_column: 0,
             process_paused: false,
+            process_detail: None,
             theme_error: None,
             theme_edit: None,
         })
@@ -152,6 +173,7 @@ impl App {
         {
             self.process_selected = self.processes.top.len().checked_sub(1);
         }
+        self.refresh_process_detail();
         let _ = self.fans.update();
 
         self.cpu_history.push(self.cpu.latest.total_percent);
@@ -268,12 +290,10 @@ impl App {
         }
     }
 
-    /// Give the Processes table focus, starting on the first row.
+    /// Give the Processes table focus, always starting on the first row.
     pub fn focus_processes(&mut self) {
         self.tab = Tab::Processes;
-        if self.process_selected.is_none() {
-            self.process_selected = Some(0);
-        }
+        self.process_selected = Some(0);
     }
 
     /// Move the Processes selection, clamped to the list.
@@ -290,6 +310,81 @@ impl App {
     pub fn process_columns(&mut self, delta: i32) {
         let next = self.process_column as i64 + i64::from(delta);
         self.process_column = next.clamp(0, crate::ui::processes::MAX_COLUMN as i64) as usize;
+    }
+
+    /// Open the detail overlay for the selected row.
+    pub fn open_process_detail(&mut self) {
+        let Some(row) = self
+            .process_selected
+            .and_then(|index| self.processes.top.get(index))
+            .cloned()
+        else {
+            return;
+        };
+        let Some(extras) = detail_extras(row.pid) else {
+            return;
+        };
+        let capacity = self.cpu_history.capacity();
+        self.process_detail = Some(ProcessDetail {
+            pid: row.pid,
+            name: row.name.clone(),
+            sample: row,
+            extras,
+            gpu_percent: 0.0,
+            cpu_history: RingBuffer::new(capacity),
+            mem_history: RingBuffer::new(capacity),
+            gpu_history: RingBuffer::new(capacity),
+            read_history: RingBuffer::new(capacity),
+            write_history: RingBuffer::new(capacity),
+            prev_gpu: None,
+        });
+    }
+
+    pub fn close_process_detail(&mut self) {
+        self.process_detail = None;
+    }
+
+    /// Re-sample the open process; closes the overlay if the pid is gone.
+    fn refresh_process_detail(&mut self) {
+        let Some(pid) = self.process_detail.as_ref().map(|detail| detail.pid) else {
+            return;
+        };
+        let row = self
+            .processes
+            .top
+            .iter()
+            .find(|process| process.pid == pid)
+            .cloned();
+        let (Some(row), Some(extras)) = (row, detail_extras(pid)) else {
+            self.process_detail = None;
+            return;
+        };
+        let Some(detail) = self.process_detail.as_mut() else {
+            return;
+        };
+
+        let now = Instant::now();
+        let gpu_percent = match detail.prev_gpu {
+            Some((prev_time, prev_ns)) => {
+                let elapsed = now.duration_since(prev_time).as_secs_f64();
+                if elapsed > 0.0 {
+                    (extras.gpu_ns.saturating_sub(prev_ns) as f64 / (elapsed * 1e9) * 100.0)
+                        .clamp(0.0, 100.0) as f32
+                } else {
+                    0.0
+                }
+            }
+            None => 0.0,
+        };
+        detail.prev_gpu = Some((now, extras.gpu_ns));
+        detail.gpu_percent = gpu_percent;
+        detail.cpu_history.push(row.cpu_percent);
+        detail.mem_history.push(row.mem_kb as f32);
+        detail.gpu_history.push(gpu_percent);
+        detail.read_history.push(row.read_bytes_per_sec as f32);
+        detail.write_history.push(row.write_bytes_per_sec as f32);
+        detail.sample = row;
+        detail.extras = extras;
     }
 
     /// Freeze or resume the process list.
@@ -318,7 +413,9 @@ impl App {
     /// the first field (down) or the last one (up).
     /// Esc: leave hex editing, otherwise hand input back to the tab bar.
     pub fn escape(&mut self) {
-        if self.theme_edit.is_some() {
+        if self.process_detail.is_some() {
+            self.close_process_detail();
+        } else if self.theme_edit.is_some() {
             self.cancel_theme_edit();
         } else if self.tab == Tab::Theme {
             self.theme_row = None;
@@ -433,6 +530,17 @@ impl App {
 mod tab_tests {
     use super::{App, Tab};
     use crate::config::Config;
+
+    #[test]
+    fn enter_opens_and_escape_closes_the_process_detail() {
+        let mut app = App::new(&Config::default(), 80).unwrap();
+        app.tab = Tab::Processes;
+        app.process_selected = Some(0);
+        app.open_process_detail();
+        assert!(app.process_detail.is_some());
+        app.escape();
+        assert!(app.process_detail.is_none());
+    }
 
     #[test]
     fn pause_toggles_and_resets_when_leaving_the_tab() {

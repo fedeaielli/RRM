@@ -60,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
                     (KeyCode::Esc, _) => app.escape(),
                     (KeyCode::Right, _) => app.arrow(1),
                     (KeyCode::Left, _) => app.arrow(-1),
+                    (KeyCode::Enter, _) if app.tab == Tab::Processes => app.open_process_detail(),
                     (KeyCode::Enter, _) if app.tab == Tab::Theme => app.start_theme_edit(),
                     (KeyCode::Up, _) if app.tab == Tab::Theme => app.select_theme_row(-1),
                     (KeyCode::Down, _) if app.tab == Tab::Theme => app.select_theme_row(1),

@@ -12,6 +12,7 @@ pub enum SortBy {
 }
 
 /// A single process row.
+#[derive(Clone)]
 pub struct ProcessSample {
     pub pid: u32,
     pub name: String,
@@ -234,6 +235,80 @@ fn parse_process_stat(contents: &str) -> Option<(u32, String, u64)> {
     Some((pid, name, utime.saturating_add(stime)))
 }
 
+/// Extras only needed by the process detail overlay.
+pub struct DetailExtras {
+    pub state: char,
+    pub threads: u64,
+    pub cmdline: String,
+    /// Total GPU engine time in nanoseconds across the process's DRM clients.
+    pub gpu_ns: u64,
+    /// GPU memory attributed to the process, in KiB.
+    pub gpu_mem_kb: u64,
+}
+
+/// Read state, threads, command line and DRM counters for one process.
+pub fn detail_extras(pid: u32) -> Option<DetailExtras> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let close = stat.rfind(')')?;
+    let tail: Vec<&str> = stat[close + 1..].split_whitespace().collect();
+    let state = tail.first()?.chars().next()?;
+    let threads = tail.get(17)?.parse().ok()?;
+
+    let cmdline = std::fs::read(format!("/proc/{pid}/cmdline"))
+        .map(|bytes| {
+            String::from_utf8_lossy(&bytes)
+                .split('\0')
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default();
+
+    let (gpu_ns, gpu_mem_kb) = read_drm_fdinfo(pid);
+    Some(DetailExtras {
+        state,
+        threads,
+        cmdline,
+        gpu_ns,
+        gpu_mem_kb,
+    })
+}
+
+/// Sum DRM engine nanoseconds and client memory across `/proc/[pid]/fdinfo/*`.
+fn read_drm_fdinfo(pid: u32) -> (u64, u64) {
+    let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/fdinfo")) else {
+        return (0, 0);
+    };
+    let mut gpu_ns = 0u64;
+    let mut gpu_mem_kb = 0u64;
+    for entry in entries.flatten() {
+        let Ok(contents) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        for line in contents.lines() {
+            if let Some(rest) = line.strip_prefix("drm-engine-") {
+                if let Some((_, value)) = rest.split_once(':')
+                    && let Some(ns) = value
+                        .trim()
+                        .strip_suffix(" ns")
+                        .and_then(|v| v.trim().parse::<u64>().ok())
+                {
+                    gpu_ns = gpu_ns.saturating_add(ns);
+                }
+            } else if let Some(rest) = line.strip_prefix("drm-total-system")
+                && let Some((_, value)) = rest.split_once(':')
+                && let Some(kb) = value
+                    .trim()
+                    .strip_suffix(" KiB")
+                    .and_then(|v| v.trim().parse::<u64>().ok())
+            {
+                gpu_mem_kb = gpu_mem_kb.saturating_add(kb);
+            }
+        }
+    }
+    (gpu_ns, gpu_mem_kb)
+}
+
 /// Read disk I/O counters from `/proc/[pid]/io`; unreadable for other users.
 fn read_io(pid: u32) -> Option<(u64, u64)> {
     let contents = std::fs::read_to_string(format!("/proc/{pid}/io")).ok()?;
@@ -273,6 +348,14 @@ mod tests {
         let sample = "rchar: 100\nwchar: 200\nread_bytes: 4096\nwrite_bytes: 8192\n";
         assert_eq!(parse_io(sample), Some((4096, 8192)));
         assert_eq!(parse_io("rchar: 1\n"), None);
+    }
+
+    #[test]
+    fn detail_extras_read_state_threads_and_cmdline() {
+        let extras = detail_extras(std::process::id()).expect("own process");
+        assert!(extras.state.is_ascii_alphabetic());
+        assert!(extras.threads >= 1);
+        assert!(!extras.cmdline.is_empty());
     }
 
     #[test]
